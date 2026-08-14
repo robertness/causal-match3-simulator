@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "causal-match3-simulator"
+version = "0.1.0"
+description = "A causal generative match-3 simulator for world-model experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "torch>=2.0",
+    "pyro-ppl>=1.9",
+    "pygame>=2.5",
+]
+
+[project.scripts]
+match3-video = "match3_simulator.video:main"
+match3-simulate = "match3_simulator.simulate:main"
+
+[tool.setuptools]
+packages = ["match3_simulator"]
+
+[tool.setuptools.package-dir]
+match3_simulator = "."
+
+[tool.setuptools.package-data]
+match3_simulator = ["calibration.json"]
