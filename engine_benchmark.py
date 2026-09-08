@@ -123,6 +123,7 @@ def engine_level_report(
             "n_players": len(risk_set.skills),
             "rollouts_per_player": surface.outcomes.shape[2],
             "n_rollouts": surface.outcomes.size,
+            "outcome_method": surface.outcome_method,
             "engine": engine_report,
             "bootstrap": bootstrap,
             "surrogate_check": {
@@ -156,6 +157,7 @@ def evaluate_engine_benchmark(
     rollouts_per_player: int = 1,
     workers: int = 1,
     n_bootstrap: int = 0,
+    reuse_goal_totals: bool = True,
     assignment: AssignmentSchedule = ASSIGNMENT_SCHEDULE,
     churn_config: ChurnSchedule = CHURN_SCHEDULE,
     mastery_config: MasteryConfig = MasteryConfig(),
@@ -204,6 +206,7 @@ def evaluate_engine_benchmark(
             grid=e_grid,
             rollouts_per_player=rollouts_per_player,
             workers=workers,
+            reuse_goal_totals=reuse_goal_totals,
         )
         surface_path = save_engine_outcome_surface(
             surface, output / f"{risk_set.level_name}-outcomes.npz"
@@ -249,6 +252,7 @@ def evaluate_engine_benchmark(
         "e_grid": list(e_grid),
         "rollouts_per_player": rollouts_per_player,
         "n_bootstrap": n_bootstrap,
+        "reuse_goal_totals": reuse_goal_totals,
         "benchmark": asdict(benchmark),
         "mastery": asdict(mastery_config),
         "assignment": asdict(assignment),
@@ -279,6 +283,9 @@ def evaluate_engine_benchmark(
             "rollouts_per_player": rollouts_per_player,
             "workers": workers,
             "n_bootstrap": n_bootstrap,
+            "outcome_method": (
+                "goal_total_threshold" if reuse_goal_totals else "direct_per_e"
+            ),
             "runtime_seconds": time.perf_counter() - started,
             "benchmark": asdict(benchmark),
             "mastery": asdict(mastery_config),
@@ -385,6 +392,7 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
     parser.add_argument("--out", type=Path, default=Path("data/engine-pilot"))
     parser.add_argument("--require-pass", action="store_true")
     parser.add_argument("--warmup-only", action="store_true")
+    parser.add_argument("--direct-per-e", action="store_true")
     parser.add_argument("--mastery-initial", type=float, default=None)
     parser.add_argument("--mastery-update-rate", type=float, default=None)
     parser.add_argument("--churn-intercepts", type=float, nargs=3, default=None)
@@ -444,6 +452,7 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
         rollouts_per_player=args.rollouts_per_player,
         workers=args.workers,
         n_bootstrap=args.bootstrap,
+        reuse_goal_totals=not args.direct_per_e,
         mastery_config=mastery_config,
         churn_config=churn_config,
     )

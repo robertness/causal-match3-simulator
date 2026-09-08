@@ -148,6 +148,7 @@ class EngineOutcomeSurface:
     player_ids: np.ndarray
     rollout_seeds: np.ndarray
     outcomes: np.ndarray
+    outcome_method: str = "direct_per_e"
 
     def __post_init__(self) -> None:
         grid = np.asarray(self.grid, dtype=np.float64)
@@ -164,6 +165,8 @@ class EngineOutcomeSurface:
             raise ValueError("outcomes must have shape (grid, players, replicates)")
         if np.any((outcomes != 0) & (outcomes != 1)):
             raise ValueError("outcomes must be binary")
+        if self.outcome_method not in {"direct_per_e", "goal_total_threshold"}:
+            raise ValueError("unsupported engine outcome method")
         object.__setattr__(self, "grid", grid)
         object.__setattr__(self, "player_ids", player_ids)
         object.__setattr__(self, "rollout_seeds", seeds)
@@ -565,12 +568,34 @@ def overlap_diagnostic(
     )
 
 
+def _engine_goal_total(
+    payload: tuple[LevelContext, Difficulty, PlayerSkill, int],
+) -> int:
+    """Run one quota-invariant full-budget trajectory and return goal progress."""
+    level, difficulty, player, seed = payload
+    import pyro
+
+    from .scm import PROXY_NAMES, ground_truth_model
+
+    pyro.set_rng_seed(seed)
+    episode = ground_truth_model(
+        level=level,
+        player=player,
+        difficulty=difficulty,
+        E=0.0,
+        evidence=np.zeros(len(PROXY_NAMES), dtype=np.float64),
+        served_goal_count=10_000,
+    )
+    return episode.goals_cleared
+
+
 def engine_outcome_surface(
     risk_set: LandmarkRiskSet,
     *,
     grid: np.ndarray | tuple[float, ...] = BENCHMARK_CONFIG.e_grid,
     rollouts_per_player: int = 2,
     workers: int = 1,
+    reuse_goal_totals: bool = True,
 ) -> EngineOutcomeSurface:
     """Run paired target-attempt interventions through the board engine."""
     if rollouts_per_player < 1:
@@ -618,22 +643,57 @@ def engine_outcome_surface(
         )
         for tier in risk_set.tier_indices
     ]
-    tasks = [
-        (
-            level,
-            difficulties[player_index],
-            players[player_index],
-            float(served_difficulty),
-            None,
-            int(rollout_seeds[player_index, replicate]),
-        )
-        for served_difficulty in grid_array
-        for player_index in range(len(players))
-        for replicate in range(rollouts_per_player)
-    ]
     executor = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
     try:
-        outcomes = _run_episode_tasks(tasks, executor)
+        if reuse_goal_totals:
+            tasks = [
+                (
+                    level,
+                    difficulties[player_index],
+                    players[player_index],
+                    int(rollout_seeds[player_index, replicate]),
+                )
+                for player_index in range(len(players))
+                for replicate in range(rollouts_per_player)
+            ]
+            if executor is None:
+                totals = [_engine_goal_total(task) for task in tasks]
+            else:
+                totals = list(
+                    executor.map(
+                        _engine_goal_total,
+                        tasks,
+                        chunksize=max(1, len(tasks) // 64),
+                    )
+                )
+            goal_totals = np.asarray(totals, dtype=np.int64).reshape(
+                len(players), rollouts_per_player
+            )
+            quotas = np.asarray(
+                [goal_count_for_E(level.name, float(e)) for e in grid_array],
+                dtype=np.int64,
+            )
+            outcome_array = (
+                goal_totals[None, :, :] >= quotas[:, None, None]
+            ).astype(np.int8)
+        else:
+            tasks = [
+                (
+                    level,
+                    difficulties[player_index],
+                    players[player_index],
+                    float(served_difficulty),
+                    None,
+                    int(rollout_seeds[player_index, replicate]),
+                )
+                for served_difficulty in grid_array
+                for player_index in range(len(players))
+                for replicate in range(rollouts_per_player)
+            ]
+            outcomes = _run_episode_tasks(tasks, executor)
+            outcome_array = np.asarray(outcomes, dtype=np.int8).reshape(
+                len(grid_array), len(players), rollouts_per_player
+            )
     finally:
         if executor is not None:
             executor.shutdown()
@@ -642,8 +702,9 @@ def engine_outcome_surface(
         grid=grid_array,
         player_ids=risk_set.player_ids,
         rollout_seeds=rollout_seeds,
-        outcomes=np.asarray(outcomes, dtype=np.int8).reshape(
-            len(grid_array), len(players), rollouts_per_player
+        outcomes=outcome_array,
+        outcome_method=(
+            "goal_total_threshold" if reuse_goal_totals else "direct_per_e"
         ),
     )
 
@@ -662,6 +723,7 @@ def save_engine_outcome_surface(
         player_ids=surface.player_ids,
         rollout_seeds=surface.rollout_seeds,
         outcomes=surface.outcomes,
+        outcome_method=np.asarray(surface.outcome_method),
     )
     return output
 
@@ -717,6 +779,11 @@ def load_engine_outcome_surface(path: str | Path) -> EngineOutcomeSurface:
             player_ids=values["player_ids"],
             rollout_seeds=values["rollout_seeds"],
             outcomes=values["outcomes"],
+            outcome_method=(
+                str(values["outcome_method"].item())
+                if "outcome_method" in values.files
+                else "direct_per_e"
+            ),
         )
 
 

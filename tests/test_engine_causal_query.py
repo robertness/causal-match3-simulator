@@ -67,6 +67,30 @@ def test_engine_surface_reuses_one_seed_per_player_replicate_across_e() -> None:
     np.testing.assert_array_equal(first.outcomes, second.outcomes)
 
 
+def test_goal_total_reuse_matches_direct_per_e_rollouts() -> None:
+    risk_set = _tiny_risk_set()
+    grid = np.asarray([-0.5, 0.0, 0.5])
+    reused = engine_outcome_surface(
+        risk_set,
+        grid=grid,
+        rollouts_per_player=2,
+        workers=1,
+        reuse_goal_totals=True,
+    )
+    direct = engine_outcome_surface(
+        risk_set,
+        grid=grid,
+        rollouts_per_player=2,
+        workers=1,
+        reuse_goal_totals=False,
+    )
+
+    np.testing.assert_array_equal(reused.rollout_seeds, direct.rollout_seeds)
+    np.testing.assert_array_equal(reused.outcomes, direct.outcomes)
+    assert reused.outcome_method == "goal_total_threshold"
+    assert direct.outcome_method == "direct_per_e"
+
+
 def test_engine_landmark_cohort_uses_realized_warmup_outcomes() -> None:
     benchmark = replace(
         BENCHMARK_CONFIG,
@@ -124,6 +148,7 @@ def test_engine_surface_round_trip_preserves_pairing(tmp_path, tiny_engine) -> N
     np.testing.assert_array_equal(restored.player_ids, surface.player_ids)
     np.testing.assert_array_equal(restored.rollout_seeds, surface.rollout_seeds)
     np.testing.assert_array_equal(restored.outcomes, surface.outcomes)
+    assert restored.outcome_method == surface.outcome_method
 
 
 def test_landmark_risk_set_round_trip_preserves_causal_state(
