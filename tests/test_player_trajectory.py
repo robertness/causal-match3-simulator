@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 from dataclasses import replace
+import hashlib
+import json
 
 import numpy as np
 
@@ -19,6 +21,8 @@ from match3_simulator.trajectory import attempt_summary_row, player_trajectory_t
 from match3_simulator.simulate import (
     simulate_players,
     write_attempt_table,
+    write_player_dataset,
+    write_oracle_attempt_table,
     write_transitions,
 )
 
@@ -124,6 +128,26 @@ def test_repeated_player_simulation_and_attempt_table(tmp_path) -> None:
     assert len(rows) == 4
     assert {row["player_id"] for row in rows} == {"0", "1"}
     assert {row["attempt_id"] for row in rows} == {"1", "2"}
+    forbidden = {
+        "mastery_before",
+        "mastery_after",
+        "oracle_win_probability",
+        "churn_probability",
+        "k_search",
+        "k_pattern",
+        "k_planning",
+        "k_strategy",
+    }
+    assert forbidden.isdisjoint(rows[0])
+
+    oracle_path = write_oracle_attempt_table(
+        trajectories, tmp_path / "oracle" / "attempts.csv"
+    )
+    with oracle_path.open(newline="") as handle:
+        oracle_rows = list(csv.DictReader(handle))
+    assert len(oracle_rows) == len(rows)
+    assert forbidden <= set(oracle_rows[0])
+    assert {"E", "R", "churn_after"}.isdisjoint(oracle_rows[0])
 
     records = [record for trajectory in trajectories for record in trajectory.attempts]
     transition_path = write_transitions(
@@ -137,3 +161,28 @@ def test_repeated_player_simulation_and_attempt_table(tmp_path) -> None:
         assert "attempt_id" in arrays.files
         assert set(arrays["player_id"]) == {0, 1}
         assert set(arrays["attempt_id"]) == {1, 2}
+
+
+def test_player_dataset_manifest_hashes_logged_and_oracle_artifacts(tmp_path) -> None:
+    trajectories = simulate_players(2, _model(), seed=239, max_attempts=2)
+    manifest_path = write_player_dataset(
+        trajectories,
+        tmp_path,
+        seed=239,
+        max_attempts=2,
+    )
+    manifest = json.loads(manifest_path.read_text())
+
+    assert manifest["schema_version"] == 1
+    assert manifest["dataset_type"] == "longitudinal_player_histories"
+    assert manifest["counts"]["players"] == 2
+    assert manifest["counts"]["attempts"] == sum(
+        len(trajectory.attempts) for trajectory in trajectories
+    )
+    assert set(manifest["logged_artifacts"]) == {"attempts", "transitions"}
+    assert set(manifest["oracle_artifacts"]) == {"attempt_state"}
+    for group in ("logged_artifacts", "oracle_artifacts"):
+        for artifact in manifest[group].values():
+            path = tmp_path / artifact["path"]
+            assert path.is_file()
+            assert artifact["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()

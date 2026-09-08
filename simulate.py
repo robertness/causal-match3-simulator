@@ -16,14 +16,29 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import asdict
+import hashlib
+import json
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import pyro
 
-from .scm import Episode, ground_truth_model
-from .retention import PlayerTrajectory, WinPropensityModel, simulate_player_trajectory
-from .trajectory import attempt_summary_row, summary_row
+from .scm import DDA_GAINS, E_SIGMAS, Episode, ground_truth_model
+from .retention import (
+    CHURN_SCHEDULE,
+    MasteryConfig,
+    PlayerTrajectory,
+    WinPropensityModel,
+    simulate_player_trajectory,
+)
+from .spec import BENCHMARK_CONFIG
+from .trajectory import (
+    logged_attempt_summary_row,
+    oracle_attempt_summary_row,
+    summary_row,
+)
 
 
 def simulate(n: int, seed: int = 0, progress_every: int = 0) -> list[Episode]:
@@ -76,7 +91,7 @@ def write_attempt_table(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
-        attempt_summary_row(record)
+        logged_attempt_summary_row(record)
         for trajectory in trajectories
         for record in trajectory.attempts
     ]
@@ -87,6 +102,125 @@ def write_attempt_table(
         writer.writeheader()
         writer.writerows(rows)
     return path
+
+
+def write_oracle_attempt_table(
+    trajectories: list[PlayerTrajectory], path: str | Path
+) -> Path:
+    """Write simulator-only player state outside the deployable table."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        oracle_attempt_summary_row(record)
+        for trajectory in trajectories
+        for record in trajectory.attempts
+    ]
+    if not rows:
+        raise ValueError("cannot write an empty oracle attempt table")
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _git_revision() -> str | None:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(__file__).resolve().parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def write_player_dataset(
+    trajectories: list[PlayerTrajectory],
+    output_dir: str | Path,
+    *,
+    seed: int,
+    max_attempts: int,
+    include_transitions: bool = True,
+) -> Path:
+    """Write physically separated logged/oracle artifacts plus a manifest."""
+    if not trajectories:
+        raise ValueError("cannot write an empty player dataset")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    records = [
+        record for trajectory in trajectories for record in trajectory.attempts
+    ]
+    attempts_path = write_attempt_table(trajectories, output / "episodes.csv")
+    oracle_path = write_oracle_attempt_table(
+        trajectories, output / "oracle" / "attempts.csv"
+    )
+    logged_artifacts: dict[str, dict[str, object]] = {
+        "attempts": {
+            "path": attempts_path.relative_to(output).as_posix(),
+            "rows": len(records),
+            "sha256": _sha256(attempts_path),
+        }
+    }
+    transition_count = sum(len(record.episode.transitions) for record in records)
+    if include_transitions:
+        transitions_path = write_transitions(
+            [record.episode for record in records],
+            output / "transitions.npz",
+            player_ids=[record.player_id for record in records],
+            attempt_ids=[record.attempt_id for record in records],
+        )
+        logged_artifacts["transitions"] = {
+            "path": transitions_path.relative_to(output).as_posix(),
+            "rows": transition_count,
+            "sha256": _sha256(transitions_path),
+        }
+    configuration = {
+        "seed": seed,
+        "max_attempts": max_attempts,
+        "benchmark": asdict(BENCHMARK_CONFIG),
+        "mastery": asdict(MasteryConfig()),
+        "churn": asdict(CHURN_SCHEDULE),
+        "assignment": {
+            "skill_gains": list(DDA_GAINS),
+            "sigmas": list(E_SIGMAS),
+        },
+    }
+    configuration_sha256 = hashlib.sha256(
+        json.dumps(configuration, sort_keys=True).encode()
+    ).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "dataset_type": "longitudinal_player_histories",
+        "code_sha": _git_revision(),
+        "configuration_sha256": configuration_sha256,
+        "configuration": configuration,
+        "counts": {
+            "players": len(trajectories),
+            "attempts": len(records),
+            "transitions": transition_count,
+            "churned_players": sum(
+                int(trajectory.churned) for trajectory in trajectories
+            ),
+        },
+        "logged_artifacts": logged_artifacts,
+        "oracle_artifacts": {
+            "attempt_state": {
+                "path": oracle_path.relative_to(output).as_posix(),
+                "rows": len(records),
+                "sha256": _sha256(oracle_path),
+            }
+        },
+    }
+    manifest_path = output / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, allow_nan=False) + "\n"
+    )
+    return manifest_path
 
 
 def write_transitions(
@@ -173,22 +307,24 @@ def main() -> None:  # pragma: no cover - CLI
             max_attempts=args.max_attempts,
             progress_every=max(1, args.n // 10),
         )
-        table = write_attempt_table(trajectories, out / "episodes.csv")
         records = [
             record for trajectory in trajectories for record in trajectory.attempts
         ]
-        print(f"wrote {table}  ({len(records)} attempts)")
+        manifest = write_player_dataset(
+            trajectories,
+            out,
+            seed=args.seed,
+            max_attempts=args.max_attempts,
+            include_transitions=not args.no_transitions,
+        )
+        print(f"wrote {out / 'episodes.csv'}  ({len(records)} attempts)")
+        print(f"wrote {out / 'oracle' / 'attempts.csv'}  (simulator-only)")
         if not args.no_transitions:
-            tensors = write_transitions(
-                [record.episode for record in records],
-                out / "transitions.npz",
-                player_ids=[record.player_id for record in records],
-                attempt_ids=[record.attempt_id for record in records],
-            )
             print(
-                f"wrote {tensors}  "
+                f"wrote {out / 'transitions.npz'}  "
                 f"({sum(len(record.episode.transitions) for record in records)} transitions)"
             )
+        print(f"wrote {manifest}")
         print(
             f"churn rate {np.mean([trajectory.churned for trajectory in trajectories]):.2f}"
         )

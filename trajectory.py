@@ -245,11 +245,45 @@ def attempt_summary_row(record: AttemptRecord) -> dict[str, Any]:
     return row
 
 
+def logged_attempt_summary_row(record: AttemptRecord) -> dict[str, Any]:
+    """One deployable attempt row containing no simulator-only state."""
+    row = summary_row(record.episode)
+    row.pop("skill_label")
+    for name in record.episode.player.as_dict():
+        row.pop(f"k_{name}")
+    row.update(
+        {
+            "player_id": record.player_id,
+            "attempt_id": record.attempt_id,
+            "active_before": 1,
+            "churn_after": record.churn_after,
+        }
+    )
+    return row
+
+
+def oracle_attempt_summary_row(record: AttemptRecord) -> dict[str, Any]:
+    """Simulator-only attempt state stored outside deployable artifacts."""
+    row: dict[str, Any] = {
+        "player_id": record.player_id,
+        "attempt_id": record.attempt_id,
+        "mastery_before": record.mastery_before,
+        "mastery_after": record.mastery_after,
+        "oracle_win_probability": record.win_probability,
+        "churn_probability": record.churn_probability,
+    }
+    for name, value in record.episode.player.as_dict().items():
+        row[f"k_{name}"] = value
+    return row
+
+
 __all__ = [
     "attempt_record_to_dict",
     "attempt_summary_row",
     "episode_to_dict",
     "load_trajectory",
+    "logged_attempt_summary_row",
+    "oracle_attempt_summary_row",
     "save_episode",
     "save_player_trajectory",
     "summary_row",
