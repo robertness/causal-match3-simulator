@@ -117,9 +117,12 @@ def attempt_record_to_dict(record: AttemptRecord) -> dict[str, Any]:
     document = episode_to_dict(record.episode)
     document.update(
         {
+            "version": 3,
             "player_id": record.player_id,
             "attempt_id": record.attempt_id,
             "active_before": 1,
+            "mastery_before": record.mastery_before,
+            "mastery_after": record.mastery_after,
             "oracle_win_probability": record.win_probability,
             "churn_probability": record.churn_probability,
             "churn_after": record.churn_after,
@@ -130,7 +133,7 @@ def attempt_record_to_dict(record: AttemptRecord) -> dict[str, Any]:
 
 def player_trajectory_to_dict(trajectory: PlayerTrajectory) -> dict[str, Any]:
     return {
-        "version": 2,
+        "version": 3,
         "player_id": trajectory.player_id,
         "player": {
             "label": trajectory.player.label,
@@ -232,6 +235,8 @@ def attempt_summary_row(record: AttemptRecord) -> dict[str, Any]:
             "player_id": record.player_id,
             "attempt_id": record.attempt_id,
             "active_before": 1,
+            "mastery_before": record.mastery_before,
+            "mastery_after": record.mastery_after,
             "oracle_win_probability": record.win_probability,
             "churn_probability": record.churn_probability,
             "churn_after": record.churn_after,

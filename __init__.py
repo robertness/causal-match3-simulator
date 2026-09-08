@@ -31,9 +31,11 @@ from .retention import (
     CHURN_SCHEDULE,
     ChurnConfig,
     ChurnSchedule,
+    MasteryConfig,
     WinPropensityModel,
-    challenge_mismatch_hazard,
+    mastery_mismatch_hazard,
     sample_C,
+    update_mastery,
 )
 from .scm import (
     DDA_GAINS,
@@ -88,6 +90,7 @@ __all__ = [
     "EVIDENCE_SPECS",
     "LEVELS",
     "LevelContext",
+    "MasteryConfig",
     "PROXY_NAMES",
     "PlayerSkill",
     "SKILL_COVARIANCE",
@@ -100,7 +103,6 @@ __all__ = [
     "Transition",
     "WinPropensityModel",
     "apply_swap",
-    "challenge_mismatch_hazard",
     "deal",
     "evidence_expectations",
     "evidence_metadata",
@@ -109,6 +111,7 @@ __all__ = [
     "immediate_effect",
     "legal_moves",
     "match_mask",
+    "mastery_mismatch_hazard",
     "move_scores",
     "resolve_move",
     "sample_A",
@@ -122,4 +125,5 @@ __all__ = [
     "sample_S_next",
     "sample_X",
     "settle",
+    "update_mastery",
 ]

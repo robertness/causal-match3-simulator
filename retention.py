@@ -18,28 +18,42 @@ def _sigmoid(value: np.ndarray | float) -> np.ndarray:
 
 
 @dataclass(frozen=True)
+class MasteryConfig:
+    """Experienced-mastery state carried between player attempts."""
+
+    initial: float = 0.55
+    update_rate: float = 0.20
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.initial <= 1.0:
+            raise ValueError("initial mastery must lie in [0, 1]")
+        if not 0.0 < self.update_rate <= 1.0:
+            raise ValueError("update_rate must lie in (0, 1]")
+
+
+@dataclass(frozen=True)
 class ChurnConfig:
-    """Symmetric challenge-mismatch hazard configuration."""
+    """Symmetric mastery-mismatch hazard configuration."""
 
     intercept: float = -4.0
     deviation_coefficient: float = 32.0
-    target_win_probability: float = 0.55
+    target_mastery: float = 0.55
 
     def __post_init__(self) -> None:
         if self.deviation_coefficient <= 0:
             raise ValueError("deviation_coefficient must be positive")
-        if not 0.0 < self.target_win_probability < 1.0:
-            raise ValueError("target_win_probability must lie in (0, 1)")
+        if not 0.0 < self.target_mastery < 1.0:
+            raise ValueError("target_mastery must lie in (0, 1)")
 
 
 @dataclass(frozen=True)
 class ChurnSchedule:
-    """Level-specific mismatch sensitivity with one global win target."""
+    """Level-specific mismatch sensitivity with one mastery target."""
 
     level_names: tuple[str, ...] = ("orchard", "harbour", "foundry")
     intercepts: tuple[float, ...] = (-4.0, -4.0, -4.0)
     deviation_coefficients: tuple[float, ...] = (128.0, 64.0, 64.0)
-    target_win_probability: float = 0.55
+    target_mastery: float = 0.55
 
     def __post_init__(self) -> None:
         n_levels = len(self.level_names)
@@ -51,15 +65,15 @@ class ChurnSchedule:
             raise ValueError("deviation coefficients must align with levels")
         if any(value <= 0 for value in self.deviation_coefficients):
             raise ValueError("deviation coefficients must be positive")
-        if not 0.0 < self.target_win_probability < 1.0:
-            raise ValueError("target_win_probability must lie in (0, 1)")
+        if not 0.0 < self.target_mastery < 1.0:
+            raise ValueError("target_mastery must lie in (0, 1)")
 
     def for_level(self, level_name: str) -> ChurnConfig:
         index = self.level_names.index(level_name)
         return ChurnConfig(
             intercept=self.intercepts[index],
             deviation_coefficient=self.deviation_coefficients[index],
-            target_win_probability=self.target_win_probability,
+            target_mastery=self.target_mastery,
         )
 
 
@@ -185,6 +199,8 @@ class AttemptRecord:
     player_id: int
     attempt_id: int
     episode: object
+    mastery_before: float
+    mastery_after: float
     win_probability: float
     churn_probability: float
     churn_after: int
@@ -207,22 +223,39 @@ class PlayerTrajectory:
         return self.attempts[-1].attempt_id if self.churned else None
 
 
-def challenge_mismatch_hazard(
-    win_probability: np.ndarray | float,
+def update_mastery(
+    mastery_before: np.ndarray | float,
+    outcome: np.ndarray | int,
+    config: MasteryConfig = MasteryConfig(),
+) -> np.ndarray | float:
+    """Update experienced mastery from a realized binary completion outcome."""
+    mastery = np.asarray(mastery_before, dtype=np.float64)
+    realized = np.asarray(outcome, dtype=np.float64)
+    if np.any((mastery < 0.0) | (mastery > 1.0)):
+        raise ValueError("mastery_before must lie in [0, 1]")
+    if np.any((realized != 0.0) & (realized != 1.0)):
+        raise ValueError("outcome must be binary")
+    updated = mastery + config.update_rate * (realized - mastery)
+    updated = np.clip(updated, 0.0, 1.0)
+    return float(updated) if updated.ndim == 0 else updated
+
+
+def mastery_mismatch_hazard(
+    mastery_after: np.ndarray | float,
     config: ChurnConfig = ChurnConfig(),
 ) -> np.ndarray:
-    """Return churn probability, minimized at the configured win target."""
-    probability = np.asarray(win_probability, dtype=np.float64)
-    if np.any((probability < 0.0) | (probability > 1.0)):
-        raise ValueError("win probability must lie in [0, 1]")
+    """Return churn probability, minimized at the configured mastery target."""
+    mastery = np.asarray(mastery_after, dtype=np.float64)
+    if np.any((mastery < 0.0) | (mastery > 1.0)):
+        raise ValueError("mastery_after must lie in [0, 1]")
     logit = config.intercept + config.deviation_coefficient * (
-        probability - config.target_win_probability
+        mastery - config.target_mastery
     ) ** 2
     return _sigmoid(logit)
 
 
 def sample_C(
-    win_probability: float,
+    mastery_after: float,
     *,
     active: bool = True,
     config: ChurnConfig = ChurnConfig(),
@@ -232,7 +265,7 @@ def sample_C(
     """Sample absorbing churn status after an attempt."""
     if not active:
         return int(pyro.deterministic(name, torch.tensor(1)))
-    hazard = float(challenge_mismatch_hazard(win_probability, config))
+    hazard = float(mastery_mismatch_hazard(mastery_after, config))
     if value is not None:
         outcome = pyro.deterministic(name, torch.tensor(int(value)))
     else:
@@ -248,9 +281,10 @@ def simulate_player_trajectory(
     max_attempts: int = 30,
     benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
     churn_config: ChurnConfig | ChurnSchedule = CHURN_SCHEDULE,
+    mastery_config: MasteryConfig = MasteryConfig(),
     player: PlayerSkill | None = None,
 ) -> PlayerTrajectory:
-    """Simulate ordered attempts with the churn clock starting at the landmark."""
+    """Simulate ordered attempts with mastery updates and absorbing churn."""
     if max_attempts < 1:
         raise ValueError("max_attempts must be positive")
     from .scm import TIER_NAMES, ground_truth_model, sample_K
@@ -261,6 +295,7 @@ def simulate_player_trajectory(
     pyro.set_rng_seed(skill_seed)
     skill = sample_K(value=player)
     attempts: list[AttemptRecord] = []
+    mastery = mastery_config.initial
     for attempt_id in range(1, max_attempts + 1):
         episode_seed = int(
             np.random.SeedSequence([seed, player_id, attempt_id]).generate_state(1)[0]
@@ -274,33 +309,34 @@ def simulate_player_trajectory(
             skill,
             episode.E,
         )
-        if attempt_id < benchmark.landmark_attempt:
-            churn_probability = 0.0
-            churn_after = 0
-        else:
-            current_churn_config = (
-                churn_config.for_level(episode.level.name)
-                if isinstance(churn_config, ChurnSchedule)
-                else churn_config
-            )
-            churn_probability = float(
-                challenge_mismatch_hazard(win_probability, current_churn_config)
-            )
-            churn_after = sample_C(
-                win_probability,
-                config=current_churn_config,
-                name=f"C/{attempt_id}",
-            )
+        mastery_before = mastery
+        mastery_after = update_mastery(mastery_before, episode.R, mastery_config)
+        current_churn_config = (
+            churn_config.for_level(episode.level.name)
+            if isinstance(churn_config, ChurnSchedule)
+            else churn_config
+        )
+        churn_probability = float(
+            mastery_mismatch_hazard(mastery_after, current_churn_config)
+        )
+        churn_after = sample_C(
+            mastery_after,
+            config=current_churn_config,
+            name=f"C/{attempt_id}",
+        )
         attempts.append(
             AttemptRecord(
                 player_id=player_id,
                 attempt_id=attempt_id,
                 episode=episode,
+                mastery_before=mastery_before,
+                mastery_after=mastery_after,
                 win_probability=win_probability,
                 churn_probability=churn_probability,
                 churn_after=churn_after,
             )
         )
+        mastery = mastery_after
         if churn_after:
             break
     return PlayerTrajectory(player_id, skill, tuple(attempts))
@@ -311,9 +347,11 @@ __all__ = [
     "CHURN_SCHEDULE",
     "ChurnConfig",
     "ChurnSchedule",
+    "MasteryConfig",
     "PlayerTrajectory",
     "WinPropensityModel",
-    "challenge_mismatch_hazard",
+    "mastery_mismatch_hazard",
     "sample_C",
     "simulate_player_trajectory",
+    "update_mastery",
 ]
