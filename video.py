@@ -13,7 +13,7 @@ import pyro
 from .animate import Timing, count_frames, episode_frames
 from .render import Theme
 from .scm import LEVELS, ground_truth_model
-from .spec import SEGMENTS, Difficulty, PlayerType
+from .spec import SKILL_PROFILES, Difficulty, PlayerSkill
 from .trajectory import save_episode
 
 
@@ -94,7 +94,9 @@ def main() -> None:  # pragma: no cover - CLI
     parser.add_argument("--out", default="media/episode.mp4")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--level", default=None, help="level name, e.g. orchard")
-    parser.add_argument("--segment", default=None, help="player label, e.g. expert")
+    parser.add_argument(
+        "--profile", default=None, help="demo skill profile, e.g. balanced-expert"
+    )
     parser.add_argument("--goal-count", type=int, default=None)
     parser.add_argument("--move-budget", type=int, default=20)
     parser.add_argument("--E", type=float, default=None, help="pin effective difficulty")
@@ -109,9 +111,9 @@ def main() -> None:  # pragma: no cover - CLI
     level = None
     if args.level:
         level = next(l for l in LEVELS if l.name == args.level)
-    player: PlayerType | None = None
-    if args.segment:
-        player = next(s for s in SEGMENTS if s.label == args.segment)
+    player: PlayerSkill | None = None
+    if args.profile:
+        player = next(s for s in SKILL_PROFILES if s.label == args.profile)
     difficulty = None
     if args.goal_count is not None:
         difficulty = Difficulty(args.move_budget, 1, args.goal_count)

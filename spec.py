@@ -4,7 +4,7 @@ Each dataclass here corresponds to one node (or node group) in the DAG:
 
     L  LevelContext   non-difficulty context; parameterises the transition kernel
     D  Difficulty     baseline tier; sets the move budget and the goal colour
-    K  PlayerType     latent player skill
+    K  PlayerSkill    latent multidimensional player skill
     E  float          served difficulty, in logits
     S  State          board plus the two counters that make D and E front-loaded
     A  Action         a swap of two orthogonally adjacent cells
@@ -35,6 +35,8 @@ class LevelContext:
     #: Unnormalised spawn weights per colour; ``None`` means uniform.
     spawn_weights: tuple[float, ...] | None = None
     name: str = "default"
+    #: Relative demand for (search, pattern, planning, strategy) skill.
+    skill_demands: tuple[float, ...] = (0.35, 0.30, 0.20, 0.15)
 
     def weights(self) -> np.ndarray:
         if self.spawn_weights is None:
@@ -51,6 +53,17 @@ class LevelContext:
         """Entropy of the spawn distribution, the scalar Lily's Garden logs."""
         w = self.weights()
         return float(-(w * np.log(w)).sum())
+
+    def demand_weights(self) -> np.ndarray:
+        """Normalised level demand vector used to project multidimensional skill."""
+        q = np.asarray(self.skill_demands, dtype=np.float64)
+        if q.shape != (len(SKILL_NAMES),):
+            raise ValueError(
+                f"skill_demands has length {q.shape[0]}, expected {len(SKILL_NAMES)}"
+            )
+        if np.any(q < 0) or not np.any(q > 0):
+            raise ValueError("skill_demands must be non-negative with a positive sum")
+        return q / q.sum()
 
 
 @dataclass(frozen=True)
@@ -71,26 +84,123 @@ class Difficulty:
         return self.baseline
 
 
-@dataclass(frozen=True)
-class PlayerType:
-    """``K`` -- a latent player segment, carrying skill on the Rasch logit scale."""
-
-    segment: int
-    label: str
-    phi: float
-
-
-#: The population of player types. ``phi`` spans roughly +/- 2.25 logits, in
-#: line with the attempts-per-clear spread reported for commercial puzzle games,
-#: where individual players range from one attempt to thirty on the same level.
-SEGMENTS: tuple[PlayerType, ...] = (
-    PlayerType(0, "novice", phi=-2.25),
-    PlayerType(1, "casual", phi=-0.75),
-    PlayerType(2, "regular", phi=0.75),
-    PlayerType(3, "expert", phi=2.25),
+SKILL_NAMES: tuple[str, ...] = (
+    "search",
+    "pattern",
+    "planning",
+    "strategy",
 )
 
-SEGMENT_PROBS: tuple[float, ...] = (0.30, 0.35, 0.25, 0.10)
+#: Population correlation on the standardised MIRT-style skill scale. The
+#: dimensions are related but not interchangeable; all marginal variances are 1.
+SKILL_COVARIANCE = np.array(
+    [
+        [1.00, 0.45, 0.25, 0.20],
+        [0.45, 1.00, 0.40, 0.30],
+        [0.25, 0.40, 1.00, 0.50],
+        [0.20, 0.30, 0.50, 1.00],
+    ],
+    dtype=np.float64,
+)
+
+
+@dataclass(frozen=True)
+class PlayerSkill:
+    """``K`` -- four standardised, correlated gameplay competencies.
+
+    Coordinates are population z-scores in the order given by
+    :data:`SKILL_NAMES`. ``label`` is only for deterministic examples and video
+    captions; the population itself is continuous and has no segments.
+    """
+
+    values: tuple[float, ...]
+    label: str = "sampled"
+
+    def __post_init__(self) -> None:
+        if len(self.values) != len(SKILL_NAMES):
+            raise ValueError(
+                f"skill vector has length {len(self.values)}, expected {len(SKILL_NAMES)}"
+            )
+        if not np.all(np.isfinite(self.values)):
+            raise ValueError("skill coordinates must be finite")
+
+    def as_array(self) -> np.ndarray:
+        return np.asarray(self.values, dtype=np.float64)
+
+    def as_dict(self) -> dict[str, float]:
+        return dict(zip(SKILL_NAMES, map(float, self.values)))
+
+    @property
+    def search(self) -> float:
+        return float(self.values[0])
+
+    @property
+    def pattern(self) -> float:
+        return float(self.values[1])
+
+    @property
+    def planning(self) -> float:
+        return float(self.values[2])
+
+    @property
+    def strategy(self) -> float:
+        return float(self.values[3])
+
+    def effective_for(self, level: LevelContext) -> float:
+        """Level-specific skill projection, standardised to unit variance."""
+        q = level.demand_weights()
+        scale = float(np.sqrt(q @ SKILL_COVARIANCE @ q))
+        return float(q @ self.as_array() / scale)
+
+
+#: Named points in skill space for examples and visual comparisons. These are
+#: not population classes and are never sampled by :func:`sample_K`.
+SKILL_PROFILES: tuple[PlayerSkill, ...] = (
+    PlayerSkill((-1.0, -1.0, -1.0, -1.0), "developing"),
+    PlayerSkill((1.4, 0.8, -0.6, -0.2), "visual-specialist"),
+    PlayerSkill((-0.4, 0.2, 1.5, 0.9), "planner"),
+    PlayerSkill((1.0, 1.0, 1.0, 1.0), "balanced-expert"),
+)
+
+
+@dataclass(frozen=True)
+class BenchmarkConfig:
+    """Pre-registered definition and gates for the landmark churn query."""
+
+    landmark_attempt: int = 20
+    warmup_churn_scale: float = 0.0
+    e_grid: tuple[float, ...] = tuple(-2.0 + 0.25 * index for index in range(17))
+    target_win_probability: float = 0.55
+    minimum_recommendation_gap: float = 1.0
+    minimum_churn_contrast: float = 0.02
+    minimum_ess_fraction: float = 0.20
+    maximum_normalized_weight: float = 0.01
+    calibration_seeds: tuple[int, ...] = (1103, 2207, 3301)
+    validation_seeds: tuple[int, ...] = (4409, 5519, 6637, 7753, 8861)
+
+    def __post_init__(self) -> None:
+        grid = np.asarray(self.e_grid, dtype=np.float64)
+        if self.landmark_attempt < 1:
+            raise ValueError("landmark_attempt must be positive")
+        if not 0.0 <= self.warmup_churn_scale <= 1.0:
+            raise ValueError("warmup_churn_scale must lie in [0, 1]")
+        if grid.ndim != 1 or len(grid) < 3 or np.any(np.diff(grid) <= 0):
+            raise ValueError("e_grid must be a strictly increasing vector")
+        if not 0.0 < self.target_win_probability < 1.0:
+            raise ValueError("target_win_probability must lie in (0, 1)")
+        if self.minimum_recommendation_gap <= 0:
+            raise ValueError("minimum_recommendation_gap must be positive")
+        if self.minimum_churn_contrast <= 0:
+            raise ValueError("minimum_churn_contrast must be positive")
+        if not 0.0 < self.minimum_ess_fraction <= 1.0:
+            raise ValueError("minimum_ess_fraction must lie in (0, 1]")
+        if not 0.0 < self.maximum_normalized_weight <= 1.0:
+            raise ValueError("maximum_normalized_weight must lie in (0, 1]")
+        if set(self.calibration_seeds) & set(self.validation_seeds):
+            raise ValueError("calibration and validation seeds must be disjoint")
+
+
+BENCHMARK_CONFIG = BenchmarkConfig()
 
 
 @dataclass(frozen=True)
@@ -206,12 +316,15 @@ def state_from(
 __all__ = [
     "EMPTY",
     "Action",
+    "BENCHMARK_CONFIG",
+    "BenchmarkConfig",
     "CascadeStep",
     "Difficulty",
     "LevelContext",
-    "PlayerType",
-    "SEGMENTS",
-    "SEGMENT_PROBS",
+    "PlayerSkill",
+    "SKILL_COVARIANCE",
+    "SKILL_NAMES",
+    "SKILL_PROFILES",
     "State",
     "Transition",
     "state_from",

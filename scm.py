@@ -2,7 +2,7 @@
 
 Every node gets its own function taking its parents as arguments, so the graph
 
-    L -> D,  D -> E,  K -> E,  D -> S_0,  E -> S_0,  L -> S_t,
+    L -> D,  L -> E,  D -> E,  K -> E,  D -> S_0,  E -> S_0,  L -> S_t,
     K -> A_t,  S_T -> R,  K -> X
 
 can be read straight off the call sites in :func:`ground_truth_model`.
@@ -10,7 +10,7 @@ can be read straight off the call sites in :func:`ground_truth_model`.
 Two conventions hold throughout:
 
 * Every node function accepts ``value=``. Passing it clamps the node, which is
-    how interventions are expressed: ``sample_E(D, K, value=1.2)`` is
+    how interventions are expressed: ``sample_E(D, L, K, value=1.2)`` is
   ``do(E = 1.2)``.
 * ``pyro.sample`` appears at stochastic SCM nodes and gameplay events: the root
     variables, noisy treatment and proxy, opening deal, refill colours, and
@@ -26,7 +26,8 @@ to correct.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
 
 import numpy as np
 import pyro
@@ -34,14 +35,21 @@ import pyro.distributions as dist
 import torch
 
 from .board import deal, legal_moves, resolve_move
-from .policy import action_probs, beta_from_skill
+from .evidence import EVIDENCE_NAMES, EVIDENCE_Q_MATRIX, sample_evidence
+from .policy import (
+    ActionDiagnostics,
+    distractor_fallback_probabilities,
+    move_feature_table,
+    notice_probabilities,
+    pattern_noise_scale,
+    staged_action_probs,
+)
 from .spec import (
-    SEGMENT_PROBS,
-    SEGMENTS,
+    SKILL_COVARIANCE,
     Action,
     Difficulty,
     LevelContext,
-    PlayerType,
+    PlayerSkill,
     State,
     Transition,
     state_from,
@@ -51,10 +59,23 @@ from .spec import (
 
 #: Level catalogue. ``L`` is a root node, so this is its support.
 LEVELS: tuple[LevelContext, ...] = (
-    LevelContext(height=8, width=8, n_colours=5, name="orchard"),
+    LevelContext(
+        height=8,
+        width=8,
+        n_colours=5,
+        name="orchard",
+        skill_demands=(0.46, 0.27, 0.27, 0.00),
+    ),
     LevelContext(height=8, width=8, n_colours=5, name="harbour",
-                 spawn_weights=(1.0, 0.8, 1.0, 1.1, 1.1)),
-    LevelContext(height=8, width=8, n_colours=6, name="foundry"),
+                 spawn_weights=(1.0, 0.8, 1.0, 1.1, 1.1),
+                 skill_demands=(0.55, 0.225, 0.225, 0.00)),
+    LevelContext(
+        height=8,
+        width=8,
+        n_colours=6,
+        name="foundry",
+        skill_demands=(0.45, 0.15, 0.40, 0.00),
+    ),
 )
 LEVEL_PROBS: tuple[float, ...] = (0.5, 0.3, 0.2)
 
@@ -62,54 +83,19 @@ LEVEL_PROBS: tuple[float, ...] = (0.5, 0.3, 0.2)
 TIER_LOGITS: tuple[float, ...] = (-0.8, 0.0, 0.8)
 TIER_NAMES: tuple[str, ...] = ("easy", "medium", "hard")
 TIER_PROBS: tuple[float, ...] = (0.3, 0.45, 0.25)
+TIER_MOVE_BUDGETS: tuple[int, ...] = (22, 20, 18)
 DEFAULT_MOVE_BUDGET = 20
 DEFAULT_GOAL_COLOUR = 1
 
-#: How hard the difficulty policy chases skill. At 0 the treatment is
-#: unconfounded; as it rises the backdoor grows. Sweeping it gives a controlled
-#: family of problems of increasing difficulty for an estimator.
-DDA_GAIN = 1.0
+#: Level-specific natural DDA strength and exploration noise, aligned with
+#: ``LEVELS``. Scalar overrides remain available for controlled ablations.
+DDA_GAINS: tuple[float, ...] = (1.5, 0.8, 1.0)
+E_SIGMAS: tuple[float, ...] = (0.65, 0.70, 1.00)
+DEFAULT_DDA_GAIN = 0.8
+DEFAULT_E_SIGMA = 0.65
 
-#: Residual noise in the difficulty-assignment policy. This is what makes the
-#: effect of E identifiable at all: with sigma = 0 the policy is deterministic
-#: given (D, K) and there is no variation left to exploit.
-E_SIGMA = 0.35
-
-#: Names of the proxy coordinates, in the order :func:`sample_X` emits them.
-PROXY_NAMES: tuple[str, ...] = (
-    "moves_left_frac_on_win",
-    "attempts_per_clear",
-    "goals_left_on_loss",
-    "cascade_rate",
-    "tiles_per_move",
-    "booster_ingame",
-    "booster_pregame",
-    "sessions_per_day",
-    "session_length",
-    "retry_latency",
-    "levels_per_session",
-    "reshuffles_seen",
-)
-
-#: Rows are proxy coordinates, columns are (phi, intercept).
-PROXY_LOADINGS = np.array(
-    [
-        [0.40, 0.35],
-        [-0.55, 3.20],
-        [-0.60, 8.00],
-        [0.30, 0.55],
-        [0.45, 4.00],
-        [-0.30, 0.80],
-        [-0.22, 0.40],
-        [0.35, 2.20],
-        [0.30, 9.00],
-        [-0.40, 2.50],
-        [0.38, 6.00],
-        [-0.15, 1.20],
-    ],
-    dtype=np.float64,
-)
-PROXY_NOISE = 0.35
+PROXY_NAMES = EVIDENCE_NAMES
+PROXY_LOADINGS = EVIDENCE_Q_MATRIX
 
 
 @dataclass
@@ -118,7 +104,7 @@ class Episode:
 
     level: LevelContext
     difficulty: Difficulty
-    player: PlayerType
+    player: PlayerSkill
     E: float
     served_goal_count: int
     states: list[State]
@@ -127,6 +113,7 @@ class Episode:
     proxy: np.ndarray
     R: int
     tier: str = ""
+    action_diagnostics: list[ActionDiagnostics] = field(default_factory=list)
 
     @property
     def moves_used(self) -> int:
@@ -168,19 +155,24 @@ def sample_L(name: str = "L", value: LevelContext | None = None) -> LevelContext
     return LEVELS[int(idx)]
 
 
-def sample_K(name: str = "K", value: PlayerType | None = None) -> PlayerType:
+def sample_K(name: str = "K", value: PlayerSkill | None = None) -> PlayerSkill:
     """``K`` -- latent player skill. Root node, observed only through ``X``."""
     if value is not None:
         return value
-    idx = pyro.sample(f"{name}/segment", dist.Categorical(probs=_tensor(SEGMENT_PROBS)))
-    return SEGMENTS[int(idx)]
+    drawn = pyro.sample(
+        name,
+        dist.MultivariateNormal(
+            torch.zeros(4), covariance_matrix=_tensor(SKILL_COVARIANCE)
+        ),
+    )
+    return PlayerSkill(tuple(float(value) for value in drawn.detach().cpu()))
 
 
 def sample_D(
     level: LevelContext,
     name: str = "D",
     value: Difficulty | None = None,
-    move_budget: int = DEFAULT_MOVE_BUDGET,
+    move_budget: int | None = None,
     goal_colour: int = DEFAULT_GOAL_COLOUR,
 ) -> tuple[Difficulty, str]:
     """``D`` -- the baseline tier the studio assigns, given ``L``.
@@ -194,12 +186,13 @@ def sample_D(
 
     idx = int(pyro.sample(f"{name}/tier", dist.Categorical(probs=_tensor(TIER_PROBS))))
     baseline = TIER_LOGITS[idx]
+    served_move_budget = TIER_MOVE_BUDGETS[idx] if move_budget is None else move_budget
 
     from .calibrate import goal_count_for_E
 
     nominal = goal_count_for_E(level.name, baseline)
     difficulty = Difficulty(
-        move_budget=move_budget,
+        move_budget=served_move_budget,
         goal_colour=goal_colour,
         goal_count=nominal,
         baseline=baseline,
@@ -209,13 +202,14 @@ def sample_D(
 
 def sample_E(
     difficulty: Difficulty,
-    player: PlayerType,
+    level: LevelContext,
+    player: PlayerSkill,
     name: str = "E",
     value: float | None = None,
-    gain: float = DDA_GAIN,
-    sigma: float = E_SIGMA,
+    gain: float | None = None,
+    sigma: float | None = None,
 ) -> float:
-    """``E`` -- the difficulty served, given ``D`` and ``K``.
+    """``E`` -- the difficulty served, given ``D``, ``L``, and ``K``.
 
     Stronger players are served harder levels, which is what every published DDA
     does. The plus sign is the source of the confounding: it correlates the
@@ -223,7 +217,19 @@ def sample_E(
     """
     if value is not None:
         return float(pyro.deterministic(name, _tensor(value)))
-    location = difficulty.baseline + gain * player.phi
+    level_index = next(
+        (
+            index
+            for index, candidate in enumerate(LEVELS)
+            if candidate.name == level.name
+        ),
+        None,
+    )
+    if gain is None:
+        gain = DDA_GAINS[level_index] if level_index is not None else DEFAULT_DDA_GAIN
+    if sigma is None:
+        sigma = E_SIGMAS[level_index] if level_index is not None else DEFAULT_E_SIGMA
+    location = difficulty.baseline + gain * player.effective_for(level)
     if sigma == 0:
         return float(pyro.deterministic(name, _tensor(location)))
     if sigma < 0:
@@ -258,30 +264,77 @@ def sample_S0(
     return state_from(level, difficulty, board, served)
 
 
-def sample_A(
+def _sample_action_decision(
     state: State,
-    player: PlayerType,
+    player: PlayerSkill,
     name: str | None = None,
     value: Action | None = None,
-) -> Action | None:
-    """``A_t`` -- the swap, given ``S_t`` and ``K``.
+) -> tuple[Action | None, ActionDiagnostics | None]:
+    """Sample ``A_t`` and retain diagnostics for the staged skill mechanisms.
 
-    Skill enters through the sharpness of the softmax over legal moves. Returns
-    ``None`` when the board offers no legal move.
+    Returns ``None`` values when the board offers no legal move.
     """
     site = name or f"A/{state.t}"
     if value is not None:
-        return value
+        return value, None
 
     moves = legal_moves(state.board)
     if not moves:
-        return None
+        return None, None
 
-    probs = action_probs(
-        state.board, moves, state.goal_colour, beta_from_skill(player.phi)
+    features = move_feature_table(
+        state.board, moves, state.goal_colour, state=state
     )
+    notice_probability = notice_probabilities(features, player.search)
+    noticed_draw = pyro.sample(
+        f"{site}/noticed",
+        dist.Bernoulli(probs=_tensor(notice_probability)).to_event(1),
+    )
+    noticed = noticed_draw.detach().cpu().numpy().astype(bool)
+    if not np.any(noticed):
+        fallback = pyro.sample(
+            f"{site}/fallback",
+            dist.Categorical(
+                probs=_tensor(distractor_fallback_probabilities(features))
+            ),
+        )
+        noticed[int(fallback)] = True
+
+    noise_scale = pattern_noise_scale(player.pattern)
+    evaluation_noise = pyro.sample(
+        f"{site}/evaluation_noise",
+        dist.Normal(torch.zeros(len(moves)), noise_scale).to_event(1),
+    )
+    probs = staged_action_probs(
+        features,
+        player,
+        noticed,
+        evaluation_noise.detach().cpu().numpy(),
+    )
+    pyro.deterministic(f"{site}/noticed_count", _tensor(int(noticed.sum())))
+    pyro.deterministic(f"{site}/pattern_noise_scale", _tensor(noise_scale))
     idx = pyro.sample(site, dist.Categorical(probs=_tensor(probs)))
-    return moves[int(idx)]
+    selected = int(idx)
+    diagnostics = ActionDiagnostics(
+        candidate_count=len(moves),
+        noticed_count=int(noticed.sum()),
+        pattern_noise_scale=noise_scale,
+        selected_total_cleared=float(features.total_cleared[selected]),
+        selected_goal_cleared=float(features.goal_cleared[selected]),
+        selected_setup_value=float(features.setup_value[selected]),
+    )
+    return moves[selected], diagnostics
+
+
+def sample_A(
+    state: State,
+    player: PlayerSkill,
+    name: str | None = None,
+    value: Action | None = None,
+) -> Action | None:
+    """``A_t`` -- the swap, given only current ``S_t`` and stable ``K``."""
+    action, _ = _sample_action_decision(state, player, name=name, value=value)
+    return action
 
 
 def sample_S_next(
@@ -308,20 +361,13 @@ def sample_S_next(
 
 
 def sample_X(
-    player: PlayerType, name: str = "X", value: np.ndarray | None = None
+    player: PlayerSkill,
+    level: LevelContext,
+    name: str = "X",
+    value: np.ndarray | None = None,
 ) -> np.ndarray:
-    """``X`` -- the telemetry proxy, given ``K``.
-
-    A noisy linear emission of skill: higher dimensional than what it proxies,
-    and no single coordinate identifies the segment on its own.
-    """
-    if value is not None:
-        return np.asarray(value, dtype=np.float64)
-    location = PROXY_LOADINGS @ np.array([player.phi, 1.0])
-    drawn = pyro.sample(
-        name, dist.Normal(_tensor(location), PROXY_NOISE).to_event(1)
-    )
-    return drawn.detach().cpu().numpy().astype(np.float64)
+    """``X`` -- typed task evidence, given multidimensional ``K`` and ``L``."""
+    return sample_evidence(player, level, name=name, value=value)
 
 
 def sample_R(
@@ -342,43 +388,56 @@ def sample_R(
 
 def ground_truth_model(
     level: LevelContext | None = None,
-    player: PlayerType | None = None,
+    player: PlayerSkill | None = None,
     difficulty: Difficulty | None = None,
     E: float | None = None,
+    evidence: np.ndarray | None = None,
     served_goal_count: int | None = None,
-    dda_gain: float = DDA_GAIN,
-    e_sigma: float = E_SIGMA,
+    dda_gain: float | None = None,
+    e_sigma: float | None = None,
     max_steps: int | None = None,
+    action_policy: Callable[[State, PlayerSkill], Action | None] | None = None,
 ) -> Episode:
     """The full data-generating process for one level attempt.
 
     Any node can be pinned by passing it, which is how interventional
     distributions are drawn: pass ``E=`` for ``do(E = e)``, ``player=`` to
-    condition on a segment, and so on.
+    condition on a skill vector, and so on.
     """
     L = sample_L(value=level)
     K = sample_K(value=player)
     D, tier = sample_D(L, value=difficulty)
-    eff = sample_E(D, K, value=E, gain=dda_gain, sigma=e_sigma)
-    X = sample_X(K)
+    eff = sample_E(D, L, K, value=E, gain=dda_gain, sigma=e_sigma)
 
     state = sample_S0(L, D, eff, served=served_goal_count)
     served = state.goals_left
     states: list[State] = [state]
     actions: list[Action] = []
     transitions: list[Transition] = []
+    action_diagnostics: list[ActionDiagnostics] = []
 
     budget = D.move_budget if max_steps is None else min(D.move_budget, max_steps)
     for _ in range(budget):
         if state.terminal:
             break
-        action = sample_A(state, K)
+        if action_policy is None:
+            action, diagnostics = _sample_action_decision(state, K)
+        else:
+            action = action_policy(state, K)
+            diagnostics = None
         if action is None:
             break
+        if action not in legal_moves(state.board):
+            raise ValueError(f"action policy returned illegal move {action}")
         state, transition = sample_S_next(state, action, L)
         actions.append(action)
         transitions.append(transition)
+        if diagnostics is not None:
+            action_diagnostics.append(diagnostics)
         states.append(state)
+
+    R = sample_R(states[-1])
+    X = sample_X(K, L, value=evidence)
 
     return Episode(
         level=L,
@@ -390,20 +449,22 @@ def ground_truth_model(
         actions=actions,
         transitions=transitions,
         proxy=X,
-        R=sample_R(states[-1]),
+        R=R,
         tier=tier,
+        action_diagnostics=action_diagnostics,
     )
 
 
 __all__ = [
-    "DDA_GAIN",
+    "DDA_GAINS",
     "Episode",
-    "E_SIGMA",
+    "E_SIGMAS",
     "LEVELS",
     "LEVEL_PROBS",
     "PROXY_LOADINGS",
     "PROXY_NAMES",
     "TIER_LOGITS",
+    "TIER_MOVE_BUDGETS",
     "TIER_NAMES",
     "ground_truth_model",
     "sample_A",

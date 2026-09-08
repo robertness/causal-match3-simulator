@@ -1,0 +1,280 @@
+"""Datasets for learned action policies and future prefix inference."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+import torch
+
+from ..retention import PlayerTrajectory
+from ..scm import Episode
+from .tokens import ACTION_SLOTS, action_to_index, legal_mask
+
+
+@dataclass(frozen=True)
+class ActionDataset:
+    """Flat state-action rows retaining episode groups and oracle skill."""
+
+    episode_indices: np.ndarray
+    player_indices: np.ndarray
+    boards: np.ndarray
+    goal_colours: np.ndarray
+    moves_left: np.ndarray
+    goals_left: np.ndarray
+    skills: np.ndarray
+    actions: np.ndarray
+    legal_actions: np.ndarray
+
+    def __post_init__(self) -> None:
+        n_rows = len(self.actions)
+        expected_vectors = {
+            "episode_indices": self.episode_indices,
+            "player_indices": self.player_indices,
+            "goal_colours": self.goal_colours,
+            "moves_left": self.moves_left,
+            "goals_left": self.goals_left,
+        }
+        for name, values in expected_vectors.items():
+            if np.shape(values) != (n_rows,):
+                raise ValueError(f"{name} must align with action rows")
+        if np.shape(self.boards) != (n_rows, 64):
+            raise ValueError("boards must have shape (rows, 64)")
+        if np.shape(self.skills) != (n_rows, 4):
+            raise ValueError("skills must have shape (rows, 4)")
+        if np.shape(self.legal_actions) != (n_rows, ACTION_SLOTS):
+            raise ValueError("legal_actions must have shape (rows, 128)")
+        if n_rows and not np.all(
+            np.asarray(self.legal_actions)[np.arange(n_rows), self.actions]
+        ):
+            raise ValueError("dataset contains an action illegal in its current state")
+
+    def __len__(self) -> int:
+        return len(self.actions)
+
+    def subset(self, rows: np.ndarray) -> "ActionDataset":
+        index = np.asarray(rows, dtype=np.int64)
+        return ActionDataset(
+            episode_indices=np.asarray(self.episode_indices)[index],
+            player_indices=np.asarray(self.player_indices)[index],
+            boards=np.asarray(self.boards)[index],
+            goal_colours=np.asarray(self.goal_colours)[index],
+            moves_left=np.asarray(self.moves_left)[index],
+            goals_left=np.asarray(self.goals_left)[index],
+            skills=np.asarray(self.skills)[index],
+            actions=np.asarray(self.actions)[index],
+            legal_actions=np.asarray(self.legal_actions)[index],
+        )
+
+    def batch(
+        self,
+        rows: np.ndarray,
+        *,
+        device: torch.device,
+        include_skill: bool,
+    ) -> dict[str, torch.Tensor]:
+        index = np.asarray(rows, dtype=np.int64)
+        skills = np.asarray(self.skills)[index]
+        if not include_skill:
+            skills = np.zeros_like(skills)
+        return {
+            "board": torch.as_tensor(
+                np.asarray(self.boards)[index], dtype=torch.long, device=device
+            ),
+            "goal_colour": torch.as_tensor(
+                np.asarray(self.goal_colours)[index], dtype=torch.long, device=device
+            ),
+            "moves_left": torch.as_tensor(
+                np.asarray(self.moves_left)[index], dtype=torch.long, device=device
+            ),
+            "goals_left": torch.as_tensor(
+                np.asarray(self.goals_left)[index], dtype=torch.long, device=device
+            ),
+            "skill": torch.as_tensor(skills, dtype=torch.float32, device=device),
+            "legal_actions": torch.as_tensor(
+                np.asarray(self.legal_actions)[index], dtype=torch.bool, device=device
+            ),
+            "action": torch.as_tensor(
+                np.asarray(self.actions)[index], dtype=torch.long, device=device
+            ),
+        }
+
+
+def action_dataset_from_episodes(
+    episodes: list[Episode],
+    *,
+    player_indices: list[int] | None = None,
+) -> ActionDataset:
+    """Flatten observed current states and actions without using next states."""
+    if player_indices is None:
+        player_indices = list(range(len(episodes)))
+    if len(player_indices) != len(episodes):
+        raise ValueError("player_indices must align with episodes")
+    episode_indices: list[int] = []
+    action_player_indices: list[int] = []
+    boards: list[np.ndarray] = []
+    goal_colours: list[int] = []
+    moves_left: list[int] = []
+    goals_left: list[int] = []
+    skills: list[np.ndarray] = []
+    actions: list[int] = []
+    masks: list[np.ndarray] = []
+    for episode_index, episode in enumerate(episodes):
+        for step, action in enumerate(episode.actions):
+            state = episode.states[step]
+            episode_indices.append(episode_index)
+            action_player_indices.append(player_indices[episode_index])
+            boards.append(state.board.reshape(-1))
+            goal_colours.append(state.goal_colour)
+            moves_left.append(state.moves_left)
+            goals_left.append(state.goals_left)
+            skills.append(episode.player.as_array())
+            actions.append(action_to_index(action))
+            masks.append(legal_mask(state.board))
+    if not actions:
+        raise ValueError("episodes contain no observed actions")
+    return ActionDataset(
+        episode_indices=np.asarray(episode_indices, dtype=np.int64),
+        player_indices=np.asarray(action_player_indices, dtype=np.int64),
+        boards=np.asarray(boards, dtype=np.int8),
+        goal_colours=np.asarray(goal_colours, dtype=np.int64),
+        moves_left=np.asarray(moves_left, dtype=np.int64),
+        goals_left=np.asarray(goals_left, dtype=np.int64),
+        skills=np.asarray(skills, dtype=np.float32),
+        actions=np.asarray(actions, dtype=np.int64),
+        legal_actions=np.asarray(masks, dtype=bool),
+    )
+
+
+def action_dataset_from_trajectories(
+    trajectories: list[PlayerTrajectory],
+) -> ActionDataset:
+    """Flatten longitudinal episodes while retaining stable player groups."""
+    episodes = [
+        record.episode
+        for trajectory in trajectories
+        for record in trajectory.attempts
+    ]
+    player_indices = [
+        trajectory.player_id
+        for trajectory in trajectories
+        for _ in trajectory.attempts
+    ]
+    return action_dataset_from_episodes(
+        episodes, player_indices=player_indices
+    )
+
+
+def split_action_dataset_by_episode(
+    dataset: ActionDataset,
+    *,
+    validation_fraction: float = 0.20,
+    seed: int = 0,
+) -> tuple[ActionDataset, ActionDataset]:
+    """Split complete episodes so no trajectory contributes to both sets."""
+    if not 0.0 < validation_fraction < 1.0:
+        raise ValueError("validation_fraction must lie in (0, 1)")
+    episodes = np.unique(dataset.episode_indices)
+    if len(episodes) < 2:
+        raise ValueError("at least two episodes are required for a split")
+    rng = np.random.default_rng(seed)
+    shuffled = rng.permutation(episodes)
+    n_validation = min(
+        len(episodes) - 1,
+        max(1, int(round(validation_fraction * len(episodes)))),
+    )
+    validation_episodes = shuffled[:n_validation]
+    validation_mask = np.isin(dataset.episode_indices, validation_episodes)
+    return (
+        dataset.subset(np.flatnonzero(~validation_mask)),
+        dataset.subset(np.flatnonzero(validation_mask)),
+    )
+
+
+def split_action_dataset_by_player(
+    dataset: ActionDataset,
+    *,
+    validation_fraction: float = 0.20,
+    seed: int = 0,
+) -> tuple[ActionDataset, ActionDataset]:
+    """Split all episodes from a player into exactly one partition."""
+    if not 0.0 < validation_fraction < 1.0:
+        raise ValueError("validation_fraction must lie in (0, 1)")
+    players = np.unique(dataset.player_indices)
+    if len(players) < 2:
+        raise ValueError("at least two players are required for a split")
+    rng = np.random.default_rng(seed)
+    shuffled = rng.permutation(players)
+    n_validation = min(
+        len(players) - 1,
+        max(1, int(round(validation_fraction * len(players)))),
+    )
+    validation_players = shuffled[:n_validation]
+    validation_mask = np.isin(dataset.player_indices, validation_players)
+    return (
+        dataset.subset(np.flatnonzero(~validation_mask)),
+        dataset.subset(np.flatnonzero(validation_mask)),
+    )
+
+
+def split_player_trajectories(
+    trajectories: list[PlayerTrajectory],
+    *,
+    validation_fraction: float = 0.15,
+    test_fraction: float = 0.15,
+    seed: int = 0,
+) -> tuple[
+    list[PlayerTrajectory],
+    list[PlayerTrajectory],
+    list[PlayerTrajectory],
+]:
+    """Create deterministic player-disjoint train, validation, and test sets."""
+    if validation_fraction <= 0 or test_fraction <= 0:
+        raise ValueError("validation and test fractions must be positive")
+    if validation_fraction + test_fraction >= 1:
+        raise ValueError("validation and test fractions must sum to less than one")
+    if len(trajectories) < 3:
+        raise ValueError("at least three player trajectories are required")
+    player_ids = [trajectory.player_id for trajectory in trajectories]
+    if len(set(player_ids)) != len(player_ids):
+        raise ValueError("player trajectory IDs must be unique")
+
+    rng = np.random.default_rng(seed)
+    shuffled = rng.permutation(player_ids)
+    n_validation = max(1, int(round(validation_fraction * len(shuffled))))
+    n_test = max(1, int(round(test_fraction * len(shuffled))))
+    while n_validation + n_test >= len(shuffled):
+        if n_validation >= n_test and n_validation > 1:
+            n_validation -= 1
+        elif n_test > 1:
+            n_test -= 1
+        else:
+            raise ValueError("fractions leave no training trajectories")
+    validation_ids = set(shuffled[:n_validation].tolist())
+    test_ids = set(shuffled[n_validation : n_validation + n_test].tolist())
+    train = [
+        trajectory
+        for trajectory in trajectories
+        if trajectory.player_id not in validation_ids | test_ids
+    ]
+    validation = [
+        trajectory
+        for trajectory in trajectories
+        if trajectory.player_id in validation_ids
+    ]
+    test = [
+        trajectory
+        for trajectory in trajectories
+        if trajectory.player_id in test_ids
+    ]
+    return train, validation, test
+
+
+__all__ = [
+    "ActionDataset",
+    "action_dataset_from_episodes",
+    "action_dataset_from_trajectories",
+    "split_action_dataset_by_episode",
+    "split_action_dataset_by_player",
+    "split_player_trajectories",
+]
