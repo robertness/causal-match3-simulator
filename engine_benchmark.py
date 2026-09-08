@@ -69,6 +69,18 @@ def _git_revision() -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _correlation(left: np.ndarray, right: np.ndarray) -> float | None:
+    left_array = np.asarray(left, dtype=np.float64)
+    right_array = np.asarray(right, dtype=np.float64)
+    if (
+        len(left_array) < 2
+        or np.std(left_array) == 0.0
+        or np.std(right_array) == 0.0
+    ):
+        return None
+    return float(np.corrcoef(left_array, right_array)[0, 1])
+
+
 def engine_level_report(
     risk_set: LandmarkRiskSet,
     surface: EngineOutcomeSurface,
@@ -240,8 +252,8 @@ def evaluate_engine_benchmark(
             "mastery_quantiles": np.quantile(
                 risk_set.mastery_before, [0.05, 0.25, 0.5, 0.75, 0.95]
             ).tolist(),
-            "mastery_effective_skill_correlation": float(
-                np.corrcoef(risk_set.mastery_before, effective_skill)[0, 1]
+            "mastery_effective_skill_correlation": _correlation(
+                risk_set.mastery_before, effective_skill
             ),
         }
         levels[risk_set.level_name] = report
@@ -344,8 +356,8 @@ def generate_engine_risk_set_artifacts(
             "mastery_quantiles": np.quantile(
                 risk_set.mastery_before, [0.05, 0.25, 0.5, 0.75, 0.95]
             ).tolist(),
-            "mastery_effective_skill_correlation": float(
-                np.corrcoef(risk_set.mastery_before, effective_skill)[0, 1]
+            "mastery_effective_skill_correlation": _correlation(
+                risk_set.mastery_before, effective_skill
             ),
         }
     document = _json_safe(
@@ -397,6 +409,8 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
     parser.add_argument("--mastery-update-rate", type=float, default=None)
     parser.add_argument("--churn-intercepts", type=float, nargs=3, default=None)
     parser.add_argument("--churn-curvatures", type=float, nargs=3, default=None)
+    parser.add_argument("--assignment-gains", type=float, nargs=3, default=None)
+    parser.add_argument("--assignment-sigmas", type=float, nargs=3, default=None)
     args = parser.parse_args()
 
     model = load_win_propensity_model(args.propensity)
@@ -426,6 +440,18 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
         ),
         mastery_target=mastery_config.initial,
     )
+    assignment = AssignmentSchedule(
+        skill_gains=(
+            ASSIGNMENT_SCHEDULE.skill_gains
+            if args.assignment_gains is None
+            else tuple(args.assignment_gains)
+        ),
+        sigmas=(
+            ASSIGNMENT_SCHEDULE.sigmas
+            if args.assignment_sigmas is None
+            else tuple(args.assignment_sigmas)
+        ),
+    )
     if args.warmup_only:
         report = generate_engine_risk_set_artifacts(
             model,
@@ -435,6 +461,7 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
             workers=args.workers,
             mastery_config=mastery_config,
             churn_config=churn_config,
+            assignment=assignment,
         )
         print(
             f"wrote {args.out / 'risk-set-report.json'}  "
@@ -455,6 +482,7 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
         reuse_goal_totals=not args.direct_per_e,
         mastery_config=mastery_config,
         churn_config=churn_config,
+        assignment=assignment,
     )
     print(
         f"wrote {args.out / 'report.json'}  "

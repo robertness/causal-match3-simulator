@@ -255,12 +255,19 @@ def _engine_warmup_summary(
         BenchmarkConfig,
         ChurnConfig | ChurnSchedule,
         MasteryConfig,
+        AssignmentSchedule,
     ],
 ) -> tuple[int, np.ndarray, float, bool]:
     """Run one player's pre-landmark engine history and retain causal state."""
-    propensity_model, player_id, seed, benchmark, churn_config, mastery_config = (
-        payload
-    )
+    (
+        propensity_model,
+        player_id,
+        seed,
+        benchmark,
+        churn_config,
+        mastery_config,
+        assignment,
+    ) = payload
     from .retention import simulate_player_trajectory
     from .scm import sample_K
 
@@ -281,6 +288,8 @@ def _engine_warmup_summary(
         benchmark=benchmark,
         churn_config=churn_config,
         mastery_config=mastery_config,
+        dda_gains=assignment.skill_gains,
+        e_sigmas=assignment.sigmas,
     )
     active = (
         len(trajectory.attempts) == benchmark.landmark_attempt - 1
@@ -310,8 +319,6 @@ def generate_engine_landmark_cohort(
         raise ValueError("n_players must be positive")
     if workers < 1:
         raise ValueError("workers must be positive")
-    if assignment != ASSIGNMENT_SCHEDULE:
-        raise ValueError("engine warm-up requires the simulator assignment schedule")
     from concurrent.futures import ProcessPoolExecutor
 
     from .scm import LEVELS, TIER_LOGITS, TIER_NAMES, TIER_PROBS
@@ -324,6 +331,7 @@ def generate_engine_landmark_cohort(
             benchmark,
             churn_config,
             mastery_config,
+            assignment,
         )
         for player_id in range(n_players)
     ]

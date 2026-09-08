@@ -306,6 +306,8 @@ def simulate_player_trajectory(
     churn_config: ChurnConfig | ChurnSchedule = CHURN_SCHEDULE,
     mastery_config: MasteryConfig = MasteryConfig(),
     player: PlayerSkill | None = None,
+    dda_gains: tuple[float, ...] | None = None,
+    e_sigmas: tuple[float, ...] | None = None,
 ) -> PlayerTrajectory:
     """Simulate ordered attempts with mastery updates and absorbing churn."""
     if max_attempts < 1:
@@ -324,7 +326,11 @@ def simulate_player_trajectory(
             np.random.SeedSequence([seed, player_id, attempt_id]).generate_state(1)[0]
         )
         pyro.set_rng_seed(episode_seed)
-        episode = ground_truth_model(player=skill)
+        episode = ground_truth_model(
+            player=skill,
+            dda_gains=dda_gains,
+            e_sigmas=e_sigmas,
+        )
         tier_index = TIER_NAMES.index(episode.tier)
         win_probability = propensity_model.probability(
             episode.level.name,

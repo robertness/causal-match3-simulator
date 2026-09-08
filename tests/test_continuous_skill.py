@@ -87,6 +87,21 @@ def test_query_and_scm_assignment_defaults_match() -> None:
     assert ASSIGNMENT_SCHEDULE.sigmas == E_SIGMAS
 
 
+def test_episode_uses_level_specific_assignment_override() -> None:
+    player = PlayerSkill((1.0, 1.0, 1.0, 1.0))
+    level = LEVELS[1]
+    episode = ground_truth_model(
+        level=level,
+        player=player,
+        difficulty=Difficulty(baseline=0.0),
+        dda_gains=(1.0, 2.0, 3.0),
+        e_sigmas=(0.0, 0.0, 0.0),
+        max_steps=0,
+    )
+
+    assert np.isclose(episode.E, 2.0 * player.effective_for(level))
+
+
 def test_custom_level_uses_safe_assignment_fallback() -> None:
     from match3_simulator.spec import LevelContext
 

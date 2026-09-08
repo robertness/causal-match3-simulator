@@ -395,6 +395,8 @@ def ground_truth_model(
     served_goal_count: int | None = None,
     dda_gain: float | None = None,
     e_sigma: float | None = None,
+    dda_gains: tuple[float, ...] | None = None,
+    e_sigmas: tuple[float, ...] | None = None,
     max_steps: int | None = None,
     action_policy: Callable[[State, PlayerSkill], Action | None] | None = None,
 ) -> Episode:
@@ -407,6 +409,22 @@ def ground_truth_model(
     L = sample_L(value=level)
     K = sample_K(value=player)
     D, tier = sample_D(L, value=difficulty)
+    if dda_gain is not None and dda_gains is not None:
+        raise ValueError("dda_gain and dda_gains cannot both be supplied")
+    if e_sigma is not None and e_sigmas is not None:
+        raise ValueError("e_sigma and e_sigmas cannot both be supplied")
+    level_index = next(
+        (index for index, candidate in enumerate(LEVELS) if candidate.name == L.name),
+        None,
+    )
+    if dda_gains is not None:
+        if len(dda_gains) != len(LEVELS) or level_index is None:
+            raise ValueError("dda_gains must align with simulator levels")
+        dda_gain = dda_gains[level_index]
+    if e_sigmas is not None:
+        if len(e_sigmas) != len(LEVELS) or level_index is None:
+            raise ValueError("e_sigmas must align with simulator levels")
+        e_sigma = e_sigmas[level_index]
     eff = sample_E(D, L, K, value=E, gain=dda_gain, sigma=e_sigma)
 
     state = sample_S0(L, D, eff, served=served_goal_count)
