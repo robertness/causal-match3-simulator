@@ -25,9 +25,11 @@ from .causal_queries import (
     comparison_report,
     engine_outcome_surface,
     generate_engine_landmark_cohort,
+    save_landmark_risk_set,
     save_engine_outcome_surface,
 )
 from .retention import CHURN_SCHEDULE, ChurnSchedule, MasteryConfig
+from .scm import LEVELS
 from .spec import BENCHMARK_CONFIG, BenchmarkConfig
 
 
@@ -194,6 +196,9 @@ def evaluate_engine_benchmark(
     levels: dict[str, object] = {}
     for level_index, full_risk_set in enumerate(cohort.risk_sets):
         risk_set = _subset_risk_set(full_risk_set, rows)
+        risk_set_path = save_landmark_risk_set(
+            risk_set, output / f"{risk_set.level_name}-risk-set.npz"
+        )
         surface = engine_outcome_surface(
             risk_set,
             grid=e_grid,
@@ -217,6 +222,24 @@ def evaluate_engine_benchmark(
         report["outcome_artifact"] = {
             "path": surface_path.name,
             "sha256": hashlib.sha256(surface_path.read_bytes()).hexdigest(),
+        }
+        level = next(item for item in LEVELS if item.name == risk_set.level_name)
+        effective_skill = risk_set.skills @ level.demand_weights()
+        report["risk_set"] = {
+            "artifact": {
+                "path": risk_set_path.name,
+                "sha256": hashlib.sha256(risk_set_path.read_bytes()).hexdigest(),
+            },
+            "mastery_mean": float(np.mean(risk_set.mastery_before)),
+            "mastery_standard_deviation": float(
+                np.std(risk_set.mastery_before)
+            ),
+            "mastery_quantiles": np.quantile(
+                risk_set.mastery_before, [0.05, 0.25, 0.5, 0.75, 0.95]
+            ).tolist(),
+            "mastery_effective_skill_correlation": float(
+                np.corrcoef(risk_set.mastery_before, effective_skill)[0, 1]
+            ),
         }
         levels[risk_set.level_name] = report
     configuration = {
@@ -271,6 +294,78 @@ def evaluate_engine_benchmark(
     return document
 
 
+def generate_engine_risk_set_artifacts(
+    propensity_model,
+    *,
+    n_players: int,
+    seed: int,
+    output_dir: str | Path,
+    workers: int = 1,
+    assignment: AssignmentSchedule = ASSIGNMENT_SCHEDULE,
+    churn_config: ChurnSchedule = CHURN_SCHEDULE,
+    mastery_config: MasteryConfig = MasteryConfig(),
+    benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
+) -> dict[str, object]:
+    """Run only pre-landmark engine histories and persist the full risk set."""
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    cohort = generate_engine_landmark_cohort(
+        propensity_model,
+        n_players=n_players,
+        seed=seed,
+        assignment=assignment,
+        churn_config=churn_config,
+        mastery_config=mastery_config,
+        benchmark=benchmark,
+        workers=workers,
+    )
+    levels: dict[str, object] = {}
+    for risk_set in cohort.risk_sets:
+        path = save_landmark_risk_set(
+            risk_set, output / f"{risk_set.level_name}-risk-set.npz"
+        )
+        level = next(item for item in LEVELS if item.name == risk_set.level_name)
+        effective_skill = risk_set.skills @ level.demand_weights()
+        levels[risk_set.level_name] = {
+            "artifact": {
+                "path": path.name,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            },
+            "mastery_mean": float(np.mean(risk_set.mastery_before)),
+            "mastery_standard_deviation": float(np.std(risk_set.mastery_before)),
+            "mastery_quantiles": np.quantile(
+                risk_set.mastery_before, [0.05, 0.25, 0.5, 0.75, 0.95]
+            ).tolist(),
+            "mastery_effective_skill_correlation": float(
+                np.corrcoef(risk_set.mastery_before, effective_skill)[0, 1]
+            ),
+        }
+    document = _json_safe(
+        {
+            "schema_version": 1,
+            "status": "calibration",
+            "artifact_type": "engine_landmark_risk_set",
+            "code_sha": _git_revision(),
+            "seed": seed,
+            "n_initial_players": cohort.n_initial_players,
+            "n_landmark_players": cohort.n_active_players,
+            "survival_fraction": cohort.survival_fraction,
+            "workers": workers,
+            "runtime_seconds": time.perf_counter() - started,
+            "benchmark": asdict(benchmark),
+            "mastery": asdict(mastery_config),
+            "assignment": asdict(assignment),
+            "churn": asdict(churn_config),
+            "levels": levels,
+        }
+    )
+    (output / "risk-set-report.json").write_text(
+        json.dumps(document, indent=2, allow_nan=False) + "\n"
+    )
+    return document
+
+
 def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--players", type=int, default=64)
@@ -289,9 +384,55 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
     parser.add_argument("--propensity", type=Path, default=WIN_PROPENSITY_PATH)
     parser.add_argument("--out", type=Path, default=Path("data/engine-pilot"))
     parser.add_argument("--require-pass", action="store_true")
+    parser.add_argument("--warmup-only", action="store_true")
+    parser.add_argument("--mastery-initial", type=float, default=None)
+    parser.add_argument("--mastery-update-rate", type=float, default=None)
+    parser.add_argument("--churn-intercepts", type=float, nargs=3, default=None)
+    parser.add_argument("--churn-curvatures", type=float, nargs=3, default=None)
     args = parser.parse_args()
 
     model = load_win_propensity_model(args.propensity)
+    mastery_defaults = MasteryConfig()
+    mastery_config = MasteryConfig(
+        initial=(
+            mastery_defaults.initial
+            if args.mastery_initial is None
+            else args.mastery_initial
+        ),
+        update_rate=(
+            mastery_defaults.update_rate
+            if args.mastery_update_rate is None
+            else args.mastery_update_rate
+        ),
+    )
+    churn_config = ChurnSchedule(
+        intercepts=(
+            CHURN_SCHEDULE.intercepts
+            if args.churn_intercepts is None
+            else tuple(args.churn_intercepts)
+        ),
+        deviation_coefficients=(
+            CHURN_SCHEDULE.deviation_coefficients
+            if args.churn_curvatures is None
+            else tuple(args.churn_curvatures)
+        ),
+        mastery_target=mastery_config.initial,
+    )
+    if args.warmup_only:
+        report = generate_engine_risk_set_artifacts(
+            model,
+            n_players=args.players,
+            seed=args.seed,
+            output_dir=args.out,
+            workers=args.workers,
+            mastery_config=mastery_config,
+            churn_config=churn_config,
+        )
+        print(
+            f"wrote {args.out / 'risk-set-report.json'}  "
+            f"players={report['n_landmark_players']}"
+        )
+        return
     report = evaluate_engine_benchmark(
         model,
         n_players=args.players,
@@ -303,6 +444,8 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
         rollouts_per_player=args.rollouts_per_player,
         workers=args.workers,
         n_bootstrap=args.bootstrap,
+        mastery_config=mastery_config,
+        churn_config=churn_config,
     )
     print(
         f"wrote {args.out / 'report.json'}  "

@@ -23,6 +23,23 @@ def _select_landmark_report(
     return selected, subtitle
 
 
+def _curve_values(level_report: dict[str, object]) -> dict[str, object]:
+    """Return the authoritative curve payload across report schema versions."""
+    engine = level_report.get("engine")
+    if engine is None:
+        return level_report
+    values = dict(engine)
+    bootstrap = level_report.get("bootstrap")
+    if isinstance(bootstrap, dict):
+        values["contrast_intervals"] = {
+            "causal": bootstrap["causal_recommendation_contrast"],
+            "observational": bootstrap[
+                "observational_recommendation_contrast"
+            ],
+        }
+    return values
+
+
 def plot_landmark_report(report_path: str | Path, output_path: str | Path) -> Path:
     import matplotlib.pyplot as plt
 
@@ -34,7 +51,8 @@ def plot_landmark_report(report_path: str | Path, output_path: str | Path) -> Pa
     )
     if len(levels) == 1:
         axes = [axes]
-    for axis, (level_name, values) in zip(axes, levels.items()):
+    for axis, (level_name, level_report) in zip(axes, levels.items()):
+        values = _curve_values(level_report)
         grid = values["grid"]
         causal = values["causal"]
         observational = values["observational"]
@@ -122,4 +140,4 @@ if __name__ == "__main__":  # pragma: no cover
     main()
 
 
-__all__ = ["plot_landmark_report"]
+__all__ = ["_curve_values", "plot_landmark_report"]

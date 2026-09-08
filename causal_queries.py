@@ -666,6 +666,45 @@ def save_engine_outcome_surface(
     return output
 
 
+def save_landmark_risk_set(
+    risk_set: LandmarkRiskSet, path: str | Path
+) -> Path:
+    """Persist every frozen pre-treatment field used by landmark queries."""
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output,
+        schema_version=np.asarray([1], dtype=np.int16),
+        level_name=np.asarray(risk_set.level_name),
+        skills=risk_set.skills,
+        tier_indices=risk_set.tier_indices,
+        mastery_before=risk_set.mastery_before,
+        assignment_locations=risk_set.assignment_locations,
+        assignment_sigma=np.asarray([risk_set.assignment_sigma]),
+        player_ids=risk_set.player_ids,
+        exogenous_seeds=risk_set.exogenous_seeds,
+    )
+    return output
+
+
+def load_landmark_risk_set(path: str | Path) -> LandmarkRiskSet:
+    """Load and validate a frozen landmark risk-set artifact."""
+    with np.load(Path(path), allow_pickle=False) as values:
+        version = int(values["schema_version"][0])
+        if version != 1:
+            raise ValueError(f"unsupported landmark risk-set schema {version}")
+        return LandmarkRiskSet(
+            level_name=str(values["level_name"].item()),
+            skills=values["skills"],
+            tier_indices=values["tier_indices"],
+            mastery_before=values["mastery_before"],
+            assignment_locations=values["assignment_locations"],
+            assignment_sigma=float(values["assignment_sigma"][0]),
+            player_ids=values["player_ids"],
+            exogenous_seeds=values["exogenous_seeds"],
+        )
+
+
 def load_engine_outcome_surface(path: str | Path) -> EngineOutcomeSurface:
     """Load and validate a paired engine outcome artifact."""
     with np.load(Path(path), allow_pickle=False) as values:
@@ -1341,7 +1380,9 @@ __all__ = [
     "overlap_diagnostic",
     "passes_initial_gates",
     "randomized_assignment_control",
+    "load_landmark_risk_set",
     "load_engine_outcome_surface",
+    "save_landmark_risk_set",
     "save_engine_outcome_surface",
     "select_grid_optimum",
 ]

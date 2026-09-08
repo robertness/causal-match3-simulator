@@ -13,7 +13,9 @@ from match3_simulator.causal_queries import (
     generate_engine_landmark_cohort,
     generate_landmark_cohort,
     load_engine_outcome_surface,
+    load_landmark_risk_set,
     save_engine_outcome_surface,
+    save_landmark_risk_set,
 )
 from match3_simulator.spec import BENCHMARK_CONFIG
 from match3_simulator.engine_benchmark import engine_level_report
@@ -122,6 +124,26 @@ def test_engine_surface_round_trip_preserves_pairing(tmp_path, tiny_engine) -> N
     np.testing.assert_array_equal(restored.player_ids, surface.player_ids)
     np.testing.assert_array_equal(restored.rollout_seeds, surface.rollout_seeds)
     np.testing.assert_array_equal(restored.outcomes, surface.outcomes)
+
+
+def test_landmark_risk_set_round_trip_preserves_causal_state(
+    tmp_path, tiny_engine
+) -> None:
+    risk_set, _ = tiny_engine
+    path = save_landmark_risk_set(risk_set, tmp_path / "risk-set.npz")
+    restored = load_landmark_risk_set(path)
+
+    assert restored.level_name == risk_set.level_name
+    assert restored.assignment_sigma == risk_set.assignment_sigma
+    for name in (
+        "skills",
+        "tier_indices",
+        "mastery_before",
+        "assignment_locations",
+        "player_ids",
+        "exogenous_seeds",
+    ):
+        np.testing.assert_array_equal(getattr(restored, name), getattr(risk_set, name))
 
 
 def test_engine_bootstrap_resamples_whole_paired_players(tiny_engine) -> None:
