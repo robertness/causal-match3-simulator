@@ -1,4 +1,4 @@
-"""Win-propensity and churn mechanisms for the landmark causal query."""
+"""Experienced-mastery and churn mechanisms for longitudinal trajectories."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ def _sigmoid(value: np.ndarray | float) -> np.ndarray:
 class MasteryConfig:
     """Experienced-mastery state carried between player attempts."""
 
-    initial: float = 0.55
-    update_rate: float = 0.20
+    initial: float = 0.35
+    update_rate: float = 0.30
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.initial <= 1.0:
@@ -35,15 +35,15 @@ class MasteryConfig:
 class ChurnConfig:
     """Symmetric mastery-mismatch hazard configuration."""
 
-    intercept: float = -4.0
-    deviation_coefficient: float = 32.0
-    target_mastery: float = 0.55
+    intercept: float = -14.0
+    deviation_coefficient: float = 512.0
+    mastery_target: float = 0.35
 
     def __post_init__(self) -> None:
         if self.deviation_coefficient <= 0:
             raise ValueError("deviation_coefficient must be positive")
-        if not 0.0 < self.target_mastery < 1.0:
-            raise ValueError("target_mastery must lie in (0, 1)")
+        if not 0.0 < self.mastery_target < 1.0:
+            raise ValueError("mastery_target must lie in (0, 1)")
 
 
 @dataclass(frozen=True)
@@ -51,9 +51,9 @@ class ChurnSchedule:
     """Level-specific mismatch sensitivity with one mastery target."""
 
     level_names: tuple[str, ...] = ("orchard", "harbour", "foundry")
-    intercepts: tuple[float, ...] = (-4.0, -4.0, -4.0)
-    deviation_coefficients: tuple[float, ...] = (128.0, 64.0, 64.0)
-    target_mastery: float = 0.55
+    intercepts: tuple[float, ...] = (-14.0, -10.0, -16.0)
+    deviation_coefficients: tuple[float, ...] = (512.0, 128.0, 192.0)
+    mastery_target: float = 0.35
 
     def __post_init__(self) -> None:
         n_levels = len(self.level_names)
@@ -65,15 +65,15 @@ class ChurnSchedule:
             raise ValueError("deviation coefficients must align with levels")
         if any(value <= 0 for value in self.deviation_coefficients):
             raise ValueError("deviation coefficients must be positive")
-        if not 0.0 < self.target_mastery < 1.0:
-            raise ValueError("target_mastery must lie in (0, 1)")
+        if not 0.0 < self.mastery_target < 1.0:
+            raise ValueError("mastery_target must lie in (0, 1)")
 
     def for_level(self, level_name: str) -> ChurnConfig:
         index = self.level_names.index(level_name)
         return ChurnConfig(
             intercept=self.intercepts[index],
             deviation_coefficient=self.deviation_coefficients[index],
-            target_mastery=self.target_mastery,
+            mastery_target=self.mastery_target,
         )
 
 
@@ -249,23 +249,46 @@ def mastery_mismatch_hazard(
     if np.any((mastery < 0.0) | (mastery > 1.0)):
         raise ValueError("mastery_after must lie in [0, 1]")
     logit = config.intercept + config.deviation_coefficient * (
-        mastery - config.target_mastery
+        mastery - config.mastery_target
     ) ** 2
     return _sigmoid(logit)
+
+
+def expected_mastery_churn(
+    win_probability: np.ndarray | float,
+    mastery_before: np.ndarray | float,
+    *,
+    mastery_config: MasteryConfig = MasteryConfig(),
+    churn_config: ChurnConfig = ChurnConfig(),
+) -> np.ndarray:
+    """Integrate post-attempt churn over a realized binary outcome."""
+    probability = np.asarray(win_probability, dtype=np.float64)
+    if np.any((probability < 0.0) | (probability > 1.0)):
+        raise ValueError("win_probability must lie in [0, 1]")
+    mastery = np.asarray(mastery_before, dtype=np.float64)
+    after_win = update_mastery(mastery, np.ones_like(mastery), mastery_config)
+    after_loss = update_mastery(mastery, np.zeros_like(mastery), mastery_config)
+    return (
+        probability * mastery_mismatch_hazard(after_win, churn_config)
+        + (1.0 - probability) * mastery_mismatch_hazard(after_loss, churn_config)
+    )
 
 
 def sample_C(
     mastery_after: float,
     *,
     active: bool = True,
+    hazard_scale: float = 1.0,
     config: ChurnConfig = ChurnConfig(),
     name: str = "C",
     value: int | None = None,
 ) -> int:
     """Sample absorbing churn status after an attempt."""
+    if not 0.0 <= hazard_scale <= 1.0:
+        raise ValueError("hazard_scale must lie in [0, 1]")
     if not active:
         return int(pyro.deterministic(name, torch.tensor(1)))
-    hazard = float(mastery_mismatch_hazard(mastery_after, config))
+    hazard = hazard_scale * float(mastery_mismatch_hazard(mastery_after, config))
     if value is not None:
         outcome = pyro.deterministic(name, torch.tensor(int(value)))
     else:
@@ -313,14 +336,20 @@ def simulate_player_trajectory(
         mastery_after = update_mastery(mastery_before, episode.R, mastery_config)
         current_churn_config = (
             churn_config.for_level(episode.level.name)
-            if isinstance(churn_config, ChurnSchedule)
+            if hasattr(churn_config, "for_level")
             else churn_config
         )
-        churn_probability = float(
+        hazard_scale = (
+            benchmark.warmup_churn_scale
+            if attempt_id < benchmark.landmark_attempt
+            else 1.0
+        )
+        churn_probability = hazard_scale * float(
             mastery_mismatch_hazard(mastery_after, current_churn_config)
         )
         churn_after = sample_C(
             mastery_after,
+            hazard_scale=hazard_scale,
             config=current_churn_config,
             name=f"C/{attempt_id}",
         )
@@ -347,6 +376,7 @@ __all__ = [
     "CHURN_SCHEDULE",
     "ChurnConfig",
     "ChurnSchedule",
+    "expected_mastery_churn",
     "MasteryConfig",
     "PlayerTrajectory",
     "WinPropensityModel",

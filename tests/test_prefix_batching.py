@@ -49,6 +49,8 @@ def test_batch_contains_only_completed_prefix_episodes() -> None:
         np.testing.assert_allclose(
             target.evidence[player_index].numpy(), second.proxy, rtol=1e-6
         )
+        assert target.mastery_before[player_index] == trajectory.attempts[1].mastery_before
+    assert target.churn_mask.all()
 
 
 def test_trajectory_split_is_player_disjoint_and_deterministic() -> None:

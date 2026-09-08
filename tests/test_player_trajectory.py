@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import numpy as np
 import csv
+from dataclasses import replace
+
+import numpy as np
 
 from match3_simulator import LEVELS, PlayerSkill
 from match3_simulator.retention import (
@@ -62,7 +64,8 @@ def test_trajectory_stops_at_first_churn() -> None:
         player_id=11,
         seed=223,
         max_attempts=30,
-        churn_config=ChurnConfig(intercept=20.0),
+        benchmark=replace(BENCHMARK_CONFIG, landmark_attempt=1),
+        churn_config=ChurnConfig(intercept=100.0),
     )
     assert trajectory.churned
     assert trajectory.churn_attempt == 1

@@ -5,6 +5,7 @@ import inspect
 import numpy as np
 import torch
 
+from match3_simulator.retention import CHURN_SCHEDULE
 from match3_simulator.learned_model.heads import (
     AssignmentHead,
     ChurnHead,
@@ -54,21 +55,23 @@ def test_win_head_is_monotone_in_served_difficulty_and_skill() -> None:
 
 def test_churn_head_is_minimized_at_target_and_symmetric() -> None:
     head = ChurnHead()
-    probabilities = head.probabilities(
-        torch.tensor([0.35, 0.55, 0.75]), torch.zeros(3, dtype=torch.long)
+    target = CHURN_SCHEDULE.mastery_target
+    churn = head.probabilities(
+        torch.tensor([target - 0.2, target, target + 0.2]),
+        torch.zeros(3, dtype=torch.long),
     )
-    assert probabilities[1] < probabilities[0]
-    assert probabilities[1] < probabilities[2]
-    torch.testing.assert_close(probabilities[0], probabilities[2])
+    assert churn[1] < churn[0]
+    assert churn[1] < churn[2]
+    torch.testing.assert_close(churn[0], churn[2])
 
 
 def test_churn_head_has_level_specific_positive_curvature() -> None:
     head = ChurnHead()
-    probability = torch.tensor([0.25, 0.25, 0.25])
-    output = head.probabilities(probability, torch.tensor([0, 1, 2]))
+    mastery = torch.full((3,), CHURN_SCHEDULE.mastery_target - 0.2)
+    output = head.probabilities(mastery, torch.tensor([0, 1, 2]))
     assert torch.all(head.deviation_coefficient > 0)
     assert output[0] > output[1]
-    torch.testing.assert_close(output[1], output[2])
+    assert output[1] > output[2]
 
 
 def test_evidence_head_returns_one_log_density_per_row() -> None:

@@ -15,9 +15,10 @@ from ..calibrate import load_win_propensity_model
 from ..causal_queries import select_grid_optimum
 from ..retention import (
     CHURN_SCHEDULE,
+    MasteryConfig,
     PlayerTrajectory,
     WinPropensityModel,
-    challenge_mismatch_hazard,
+    expected_mastery_churn,
 )
 from ..scm import LEVELS, TIER_NAMES, TIER_PROBS, ground_truth_model
 from ..simulate import simulate_players
@@ -68,9 +69,17 @@ def _head_curves(
     skills: np.ndarray,
     e_grid: tuple[float, ...],
     *,
+    mastery_before: np.ndarray | None = None,
     device: torch.device,
 ) -> dict[str, list[dict[str, float]]]:
     skill_array = np.asarray(skills, dtype=np.float32)
+    mastery_array = (
+        np.full(len(skill_array), MasteryConfig().initial, dtype=np.float32)
+        if mastery_before is None
+        else np.asarray(mastery_before, dtype=np.float32)
+    )
+    if mastery_array.shape != (len(skill_array),):
+        raise ValueError("mastery_before must align with skills")
     tier_probabilities = torch.as_tensor(
         TIER_PROBS, dtype=torch.float32, device=device
     )
@@ -96,8 +105,13 @@ def _head_curves(
             win = model.win_head.probabilities(
                 served, expanded_skill, levels, tiers
             ).reshape(len(skill_array), len(TIER_NAMES))
-            churn = model.churn_head.probabilities(
-                win.reshape(-1), levels
+            expanded_mastery = torch.as_tensor(
+                np.repeat(mastery_array, len(TIER_NAMES)),
+                dtype=torch.float32,
+                device=device,
+            )
+            churn = model.expected_churn_probability(
+                win.reshape(-1), expanded_mastery, levels
             ).reshape_as(win)
             rows.append(
                 {
@@ -167,6 +181,8 @@ def evaluate_causal_query(
     propensity_model: WinPropensityModel,
     *,
     e_grid: tuple[float, ...] = BENCHMARK_CONFIG.e_grid,
+    mastery_before: np.ndarray | None = None,
+    mastery_config: MasteryConfig = MasteryConfig(),
     device: torch.device = torch.device("cpu"),
 ) -> dict[str, object]:
     """Compare learned and oracle do-curves on held-out player populations."""
@@ -174,7 +190,20 @@ def evaluate_causal_query(
     truth = np.asarray(true_skills, dtype=np.float64)
     if inferred.shape != truth.shape or inferred.ndim != 2 or inferred.shape[1] != 4:
         raise ValueError("inferred and true skills must have matching (players, 4) shapes")
-    learned = _head_curves(model, inferred, e_grid, device=device)
+    mastery = (
+        np.full(len(truth), mastery_config.initial, dtype=np.float64)
+        if mastery_before is None
+        else np.asarray(mastery_before, dtype=np.float64)
+    )
+    if mastery.shape != (len(truth),):
+        raise ValueError("mastery_before must align with skills")
+    learned = _head_curves(
+        model,
+        inferred,
+        e_grid,
+        mastery_before=mastery,
+        device=device,
+    )
     tier_indices = np.tile(np.arange(len(TIER_NAMES)), len(truth))
     expanded_truth = np.repeat(truth, len(TIER_NAMES), axis=0)
     tier_probabilities = np.asarray(TIER_PROBS)
@@ -188,8 +217,13 @@ def evaluate_causal_query(
                 expanded_truth,
                 served_difficulty,
             ).reshape(len(truth), len(TIER_NAMES))
-            hazard = challenge_mismatch_hazard(
-                win_probability, CHURN_SCHEDULE.for_level(level.name)
+            hazard = expected_mastery_churn(
+                win_probability,
+                np.repeat(mastery, len(TIER_NAMES)).reshape(
+                    len(truth), len(TIER_NAMES)
+                ),
+                mastery_config=mastery_config,
+                churn_config=CHURN_SCHEDULE.for_level(level.name),
             )
             oracle_values.append(float(np.mean(hazard @ tier_probabilities)))
         learned_values = [

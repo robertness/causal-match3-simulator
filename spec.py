@@ -168,11 +168,12 @@ class BenchmarkConfig:
     """Pre-registered definition and gates for the landmark churn query."""
 
     landmark_attempt: int = 20
-    warmup_churn_scale: float = 0.0
+    warmup_churn_scale: float = 0.005
     e_grid: tuple[float, ...] = tuple(-2.0 + 0.25 * index for index in range(17))
-    target_win_probability: float = 0.55
+    mastery_target: float = 0.35
     minimum_recommendation_gap: float = 1.0
     minimum_churn_contrast: float = 0.02
+    minimum_shoulder_contrast: float = 0.01
     minimum_ess_fraction: float = 0.20
     maximum_normalized_weight: float = 0.01
     calibration_seeds: tuple[int, ...] = (1103, 2207, 3301)
@@ -186,12 +187,14 @@ class BenchmarkConfig:
             raise ValueError("warmup_churn_scale must lie in [0, 1]")
         if grid.ndim != 1 or len(grid) < 3 or np.any(np.diff(grid) <= 0):
             raise ValueError("e_grid must be a strictly increasing vector")
-        if not 0.0 < self.target_win_probability < 1.0:
-            raise ValueError("target_win_probability must lie in (0, 1)")
+        if not 0.0 < self.mastery_target < 1.0:
+            raise ValueError("mastery_target must lie in (0, 1)")
         if self.minimum_recommendation_gap <= 0:
             raise ValueError("minimum_recommendation_gap must be positive")
         if self.minimum_churn_contrast <= 0:
             raise ValueError("minimum_churn_contrast must be positive")
+        if self.minimum_shoulder_contrast <= 0:
+            raise ValueError("minimum_shoulder_contrast must be positive")
         if not 0.0 < self.minimum_ess_fraction <= 1.0:
             raise ValueError("minimum_ess_fraction must lie in (0, 1]")
         if not 0.0 < self.maximum_normalized_weight <= 1.0:

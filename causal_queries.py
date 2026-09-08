@@ -13,8 +13,11 @@ from .retention import (
     CHURN_SCHEDULE,
     ChurnConfig,
     ChurnSchedule,
+    MasteryConfig,
     WinPropensityModel,
-    challenge_mismatch_hazard,
+    expected_mastery_churn,
+    mastery_mismatch_hazard,
+    update_mastery,
 )
 from .spec import (
     BENCHMARK_CONFIG,
@@ -44,8 +47,8 @@ class AssignmentSchedule:
     """Validated level-specific natural DDA assignment parameters."""
 
     level_names: tuple[str, ...] = ("orchard", "harbour", "foundry")
-    skill_gains: tuple[float, ...] = (1.5, 0.8, 1.0)
-    sigmas: tuple[float, ...] = (0.65, 0.70, 1.00)
+    skill_gains: tuple[float, ...] = (4.0, 4.0, 8.0)
+    sigmas: tuple[float, ...] = (1.2, 1.2, 2.4)
 
     def __post_init__(self) -> None:
         n_levels = len(self.level_names)
@@ -89,17 +92,23 @@ class LandmarkRiskSet:
     level_name: str
     skills: np.ndarray
     tier_indices: np.ndarray
+    mastery_before: np.ndarray
     assignment_locations: np.ndarray
     assignment_sigma: float
 
     def __post_init__(self) -> None:
         skills = np.asarray(self.skills)
         tiers = np.asarray(self.tier_indices)
+        mastery = np.asarray(self.mastery_before)
         locations = np.asarray(self.assignment_locations)
         if skills.ndim != 2 or skills.shape[1] != len(SKILL_NAMES):
             raise ValueError("skills must have shape (players, skills)")
         if tiers.shape != (skills.shape[0],):
             raise ValueError("tier_indices must align with skills")
+        if mastery.shape != (skills.shape[0],):
+            raise ValueError("mastery_before must align with skills")
+        if np.any((mastery < 0.0) | (mastery > 1.0)):
+            raise ValueError("mastery_before must lie in [0, 1]")
         if locations.shape != (skills.shape[0],):
             raise ValueError("assignment_locations must align with skills")
         if skills.shape[0] == 0:
@@ -189,6 +198,7 @@ def generate_landmark_cohort(
     seed: int,
     assignment: AssignmentConfig | AssignmentSchedule = ASSIGNMENT_SCHEDULE,
     churn_config: ChurnConfig | ChurnSchedule = CHURN_SCHEDULE,
+    mastery_config: MasteryConfig = MasteryConfig(),
     benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
 ) -> LandmarkCohort:
     """Generate the warm-up risk set, then clone it across landmark levels.
@@ -221,45 +231,51 @@ def generate_landmark_cohort(
         [_effective_skills(skills, level) for level in LEVELS]
     )
     active = np.ones(n_players, dtype=bool)
+    mastery = np.full(n_players, mastery_config.initial, dtype=np.float64)
     tier_logits = np.asarray(TIER_LOGITS, dtype=np.float64)
 
-    if benchmark.warmup_churn_scale > 0.0:
-        for _ in range(1, benchmark.landmark_attempt):
-            level_indices = rng.choice(len(LEVELS), size=n_players, p=LEVEL_PROBS)
-            tier_indices = rng.choice(len(TIER_NAMES), size=n_players, p=TIER_PROBS)
-            gains = np.asarray(
-                [
-                    _assignment_for_level(assignment, level.name).skill_gain
-                    for level in LEVELS
-                ]
-            )
-            sigmas = np.asarray(
-                [
-                    _assignment_for_level(assignment, level.name).sigma
-                    for level in LEVELS
-                ]
-            )
-            assignment_locations = (
-                tier_logits[tier_indices]
-                + gains[level_indices]
-                * effective_by_level[np.arange(n_players), level_indices]
-            )
-            served = assignment_locations + rng.normal(size=n_players) * sigmas[
-                level_indices
-            ]
-            win_probability = np.empty(n_players, dtype=np.float64)
-            hazard = np.empty(n_players, dtype=np.float64)
+    gains = np.asarray(
+        [
+            _assignment_for_level(assignment, level.name).skill_gain
+            for level in LEVELS
+        ]
+    )
+    sigmas = np.asarray(
+        [
+            _assignment_for_level(assignment, level.name).sigma
+            for level in LEVELS
+        ]
+    )
+    for _ in range(1, benchmark.landmark_attempt):
+        level_indices = rng.choice(len(LEVELS), size=n_players, p=LEVEL_PROBS)
+        tier_indices = rng.choice(len(TIER_NAMES), size=n_players, p=TIER_PROBS)
+        assignment_locations = (
+            tier_logits[tier_indices]
+            + gains[level_indices]
+            * effective_by_level[np.arange(n_players), level_indices]
+        )
+        served = assignment_locations + rng.normal(size=n_players) * sigmas[
+            level_indices
+        ]
+        win_probability = np.empty(n_players, dtype=np.float64)
+        hazard = np.empty(n_players, dtype=np.float64)
+        for level_index, level in enumerate(LEVELS):
+            mask = level_indices == level_index
+            if np.any(mask):
+                win_probability[mask] = propensity_model.probabilities(
+                    level.name,
+                    tier_indices[mask],
+                    skills[mask],
+                    served[mask],
+                )
+        outcomes = rng.binomial(1, win_probability)
+        mastery_after = update_mastery(mastery, outcomes, mastery_config)
+        if benchmark.warmup_churn_scale > 0.0:
             for level_index, level in enumerate(LEVELS):
                 mask = level_indices == level_index
                 if np.any(mask):
-                    win_probability[mask] = propensity_model.probabilities(
-                        level.name,
-                        tier_indices[mask],
-                        skills[mask],
-                        served[mask],
-                    )
-                    hazard[mask] = challenge_mismatch_hazard(
-                        win_probability[mask],
+                    hazard[mask] = mastery_mismatch_hazard(
+                        mastery_after[mask],
                         _churn_for_level(churn_config, level.name),
                     )
             churned = (
@@ -267,6 +283,7 @@ def generate_landmark_cohort(
                 < benchmark.warmup_churn_scale * hazard
             )
             active &= ~churned
+        mastery = mastery_after
 
     active_player_ids = np.flatnonzero(active)
     if len(active_player_ids) == 0:
@@ -286,6 +303,7 @@ def generate_landmark_cohort(
                 level_name=level.name,
                 skills=active_skills.copy(),
                 tier_indices=tiers,
+                mastery_before=mastery[active].copy(),
                 assignment_locations=locations,
                 assignment_sigma=level_assignment.sigma,
             )
@@ -310,6 +328,7 @@ def randomized_assignment_control(
             level_name=risk_set.level_name,
             skills=risk_set.skills,
             tier_indices=risk_set.tier_indices,
+            mastery_before=risk_set.mastery_before,
             assignment_locations=np.zeros(len(risk_set.skills)),
             assignment_sigma=sigma,
         )
@@ -340,17 +359,20 @@ def oracle_causal_curve(
     propensity_model: WinPropensityModel,
     churn_config: ChurnConfig,
     grid: np.ndarray,
+    mastery_config: MasteryConfig = MasteryConfig(),
 ) -> np.ndarray:
     skills = np.asarray(risk_set.skills, dtype=np.float64)
     tiers = np.asarray(risk_set.tier_indices, dtype=np.int64)
     return np.asarray(
         [
             np.mean(
-                challenge_mismatch_hazard(
+                expected_mastery_churn(
                     propensity_model.probabilities(
                         risk_set.level_name, tiers, skills, float(e)
                     ),
-                    churn_config,
+                    risk_set.mastery_before,
+                    mastery_config=mastery_config,
+                    churn_config=churn_config,
                 )
             )
             for e in grid
@@ -363,16 +385,19 @@ def oracle_observational_curve(
     propensity_model: WinPropensityModel,
     churn_config: ChurnConfig,
     grid: np.ndarray,
+    mastery_config: MasteryConfig = MasteryConfig(),
 ) -> np.ndarray:
     skills = np.asarray(risk_set.skills, dtype=np.float64)
     tiers = np.asarray(risk_set.tier_indices, dtype=np.int64)
     values = []
     for e in grid:
-        hazard = challenge_mismatch_hazard(
+        hazard = expected_mastery_churn(
             propensity_model.probabilities(
                 risk_set.level_name, tiers, skills, float(e)
             ),
-            churn_config,
+            risk_set.mastery_before,
+            mastery_config=mastery_config,
+            churn_config=churn_config,
         )
         weights = _normalized_assignment_weights(risk_set, float(e))
         values.append(float(weights @ hazard))
@@ -392,13 +417,18 @@ def select_grid_optimum(grid: np.ndarray, values: np.ndarray) -> float:
 def compare_oracle_curves(
     risk_set: LandmarkRiskSet,
     propensity_model: WinPropensityModel,
-    churn_config: ChurnConfig = ChurnConfig(),
+    churn_config: ChurnConfig | None = None,
+    mastery_config: MasteryConfig = MasteryConfig(),
     benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
 ) -> CurveComparison:
+    if churn_config is None:
+        churn_config = CHURN_SCHEDULE.for_level(risk_set.level_name)
     grid = np.asarray(benchmark.e_grid, dtype=np.float64)
-    causal = oracle_causal_curve(risk_set, propensity_model, churn_config, grid)
+    causal = oracle_causal_curve(
+        risk_set, propensity_model, churn_config, grid, mastery_config
+    )
     observational = oracle_observational_curve(
-        risk_set, propensity_model, churn_config, grid
+        risk_set, propensity_model, churn_config, grid, mastery_config
     )
     causal_optimum = select_grid_optimum(grid, causal)
     observational_optimum = select_grid_optimum(grid, observational)
@@ -447,8 +477,8 @@ def passes_initial_gates(
         >= benchmark.minimum_churn_contrast
         and comparison.observational_recommendation_contrast
         <= -benchmark.minimum_churn_contrast
-        and comparison.causal_left_contrast >= benchmark.minimum_churn_contrast
-        and comparison.causal_right_contrast >= benchmark.minimum_churn_contrast
+        and comparison.causal_left_contrast >= benchmark.minimum_shoulder_contrast
+        and comparison.causal_right_contrast >= benchmark.minimum_shoulder_contrast
         and overlap_ok
     )
 
@@ -458,28 +488,35 @@ def bootstrap_recommendation_contrasts(
     propensity_model: WinPropensityModel,
     comparison: CurveComparison,
     *,
-    churn_config: ChurnConfig = ChurnConfig(),
+    churn_config: ChurnConfig | None = None,
+    mastery_config: MasteryConfig = MasteryConfig(),
     n_bootstrap: int = 500,
     seed: int = 0,
 ) -> RecommendationContrastIntervals:
     """Bootstrap fixed-optimum contrasts by resampling landmark players."""
     if n_bootstrap < 20:
         raise ValueError("n_bootstrap must be at least 20")
+    if churn_config is None:
+        churn_config = CHURN_SCHEDULE.for_level(risk_set.level_name)
     skills = np.asarray(risk_set.skills, dtype=np.float64)
     tiers = np.asarray(risk_set.tier_indices, dtype=np.int64)
     causal_e = comparison.causal_optimum
     observational_e = comparison.observational_optimum
-    hazard_causal_e = challenge_mismatch_hazard(
+    hazard_causal_e = expected_mastery_churn(
         propensity_model.probabilities(
             risk_set.level_name, tiers, skills, causal_e
         ),
-        churn_config,
+        risk_set.mastery_before,
+        mastery_config=mastery_config,
+        churn_config=churn_config,
     )
-    hazard_observational_e = challenge_mismatch_hazard(
+    hazard_observational_e = expected_mastery_churn(
         propensity_model.probabilities(
             risk_set.level_name, tiers, skills, observational_e
         ),
-        churn_config,
+        risk_set.mastery_before,
+        mastery_config=mastery_config,
+        churn_config=churn_config,
     )
     locations = np.asarray(risk_set.assignment_locations, dtype=np.float64)
     weight_causal_e = np.exp(
@@ -548,10 +585,10 @@ def comparison_report(
             <= -benchmark.minimum_churn_contrast
         ),
         "left_u_shape": (
-            comparison.causal_left_contrast >= benchmark.minimum_churn_contrast
+            comparison.causal_left_contrast >= benchmark.minimum_shoulder_contrast
         ),
         "right_u_shape": (
-            comparison.causal_right_contrast >= benchmark.minimum_churn_contrast
+            comparison.causal_right_contrast >= benchmark.minimum_shoulder_contrast
         ),
         "overlap": all(overlap_passes),
     }
@@ -611,6 +648,7 @@ def evaluate_landmark_benchmark(
     seed: int,
     assignment: AssignmentConfig | AssignmentSchedule = ASSIGNMENT_SCHEDULE,
     churn_config: ChurnConfig | ChurnSchedule = CHURN_SCHEDULE,
+    mastery_config: MasteryConfig = MasteryConfig(),
     benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
     n_bootstrap: int = 0,
 ) -> dict[str, object]:
@@ -621,6 +659,7 @@ def evaluate_landmark_benchmark(
         seed=seed,
         assignment=assignment,
         churn_config=churn_config,
+        mastery_config=mastery_config,
         benchmark=benchmark,
     )
     levels: dict[str, object] = {}
@@ -633,6 +672,7 @@ def evaluate_landmark_benchmark(
             risk_set,
             propensity_model,
             churn_config=current_churn,
+            mastery_config=mastery_config,
             benchmark=benchmark,
         )
         intervals = (
@@ -641,6 +681,7 @@ def evaluate_landmark_benchmark(
                 propensity_model,
                 comparison,
                 churn_config=current_churn,
+                mastery_config=mastery_config,
                 n_bootstrap=n_bootstrap,
                 seed=seed,
             )
@@ -657,17 +698,18 @@ def evaluate_landmark_benchmark(
         level_report["churn"] = {
             "intercept": current_churn.intercept,
             "deviation_coefficient": current_churn.deviation_coefficient,
-            "target_win_probability": current_churn.target_win_probability,
+            "mastery_target": current_churn.mastery_target,
         }
         levels[risk_set.level_name] = level_report
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "passed": all(bool(report["passed"]) for report in levels.values()),
         "seed": seed,
         "n_initial_players": cohort.n_initial_players,
         "n_landmark_players": cohort.n_active_players,
         "landmark_attempt": benchmark.landmark_attempt,
         "warmup_churn_scale": benchmark.warmup_churn_scale,
+        "mastery": asdict(mastery_config),
         "benchmark": asdict(benchmark),
         "levels": levels,
     }
@@ -679,6 +721,7 @@ def evaluate_validation_suite(
     n_players: int,
     assignment: AssignmentConfig | AssignmentSchedule = ASSIGNMENT_SCHEDULE,
     churn_config: ChurnConfig | ChurnSchedule = CHURN_SCHEDULE,
+    mastery_config: MasteryConfig = MasteryConfig(),
     benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
     n_bootstrap: int = 0,
 ) -> dict[str, object]:
@@ -690,13 +733,14 @@ def evaluate_validation_suite(
             seed=seed,
             assignment=assignment,
             churn_config=churn_config,
+            mastery_config=mastery_config,
             benchmark=benchmark,
             n_bootstrap=n_bootstrap,
         )
         for seed in benchmark.validation_seeds
     ]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "passed": all(bool(report["passed"]) for report in seed_reports),
         "validation_seeds": list(benchmark.validation_seeds),
         "n_players_per_seed": n_players,

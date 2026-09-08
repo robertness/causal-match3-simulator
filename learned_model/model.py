@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from ..retention import MasteryConfig
 from .action_policy import ActionPolicyConfig, ContinuousActionPolicy
 from .encoder import CausalPrefixEncoder, PrefixEncoderConfig
 from .heads import (
@@ -29,6 +30,7 @@ class PredictiveTarget:
     tiers: torch.Tensor
     evidence: torch.Tensor
     outcomes: torch.Tensor
+    mastery_before: torch.Tensor
     churn: torch.Tensor
     churn_mask: torch.Tensor
     action_player: torch.Tensor
@@ -47,6 +49,7 @@ class ContinuousCausalVAE(nn.Module):
         self,
         encoder_config: PrefixEncoderConfig = PrefixEncoderConfig(),
         action_config: ActionPolicyConfig = ActionPolicyConfig(),
+        mastery_config: MasteryConfig = MasteryConfig(),
     ):
         super().__init__()
         if encoder_config.skill_dimensions != action_config.skill_dimensions:
@@ -70,11 +73,29 @@ class ContinuousCausalVAE(nn.Module):
             skill_dimensions=encoder_config.skill_dimensions,
         )
         self.churn_head = ChurnHead(n_levels=encoder_config.n_levels)
+        self.mastery_update_rate = mastery_config.update_rate
 
     def posterior(
         self, prefix: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor]:
         return self.encoder(**prefix)
+
+    def expected_churn_probability(
+        self,
+        win_probability: torch.Tensor,
+        mastery_before: torch.Tensor,
+        level: torch.Tensor,
+    ) -> torch.Tensor:
+        """Integrate the churn head over the two possible realized outcomes."""
+        mastery = mastery_before.to(win_probability.dtype)
+        after_win = mastery + self.mastery_update_rate * (1.0 - mastery)
+        after_loss = mastery - self.mastery_update_rate * mastery
+        churn_after_win = self.churn_head.probabilities(after_win, level)
+        churn_after_loss = self.churn_head.probabilities(after_loss, level)
+        return (
+            win_probability * churn_after_win
+            + (1.0 - win_probability) * churn_after_loss
+        )
 
     def predictive_objective(
         self,
@@ -117,9 +138,11 @@ class ContinuousCausalVAE(nn.Module):
         win_nll = F.binary_cross_entropy_with_logits(
             win_logits, target.outcomes.to(win_logits.dtype)
         )
-        churn_logits = self.churn_head.logits(
-            torch.sigmoid(win_logits), target.levels.long()
+        mastery_before = target.mastery_before.to(win_logits.dtype)
+        mastery_after = mastery_before + self.mastery_update_rate * (
+            target.outcomes.to(win_logits.dtype) - mastery_before
         )
+        churn_logits = self.churn_head.logits(mastery_after, target.levels.long())
         churn_losses = F.binary_cross_entropy_with_logits(
             churn_logits,
             target.churn.to(churn_logits.dtype),
@@ -160,6 +183,7 @@ class ContinuousCausalVAE(nn.Module):
             "posterior_mean": mean,
             "posterior_log_scale": log_scale,
             "skill_sample": skill,
+            "mastery_after": mastery_after,
         }
 
 

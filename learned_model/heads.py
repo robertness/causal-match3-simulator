@@ -224,11 +224,15 @@ class WinHead(nn.Module):
 
 @dataclass(frozen=True)
 class ChurnHeadConfig:
-    target_win_probability: float = 0.55
+    mastery_target: float = CHURN_SCHEDULE.mastery_target
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.mastery_target < 1.0:
+            raise ValueError("mastery_target must lie in (0, 1)")
 
 
 class ChurnHead(nn.Module):
-    """Constrained U-shaped p(C=1 | pi_win)."""
+    """Constrained U-shaped p(C=1 | M_after, L)."""
 
     def __init__(
         self,
@@ -254,19 +258,19 @@ class ChurnHead(nn.Module):
         return F.softplus(self.raw_deviation)
 
     def logits(
-        self, win_probability: torch.Tensor, level: torch.Tensor
+        self, mastery_after: torch.Tensor, level: torch.Tensor
     ) -> torch.Tensor:
         level_index = level.long()
         return self.intercept[level_index] + self.deviation_coefficient[
             level_index
         ] * (
-            win_probability - self.config.target_win_probability
+            mastery_after - self.config.mastery_target
         ).square()
 
     def probabilities(
-        self, win_probability: torch.Tensor, level: torch.Tensor
+        self, mastery_after: torch.Tensor, level: torch.Tensor
     ) -> torch.Tensor:
-        return torch.sigmoid(self.logits(win_probability, level))
+        return torch.sigmoid(self.logits(mastery_after, level))
 
 
 __all__ = [

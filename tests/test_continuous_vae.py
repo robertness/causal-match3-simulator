@@ -5,6 +5,7 @@ import torch
 from match3_simulator.learned_model.action_policy import ActionPolicyConfig
 from match3_simulator.learned_model.encoder import PrefixEncoderConfig
 from match3_simulator.learned_model.model import ContinuousCausalVAE, PredictiveTarget
+from match3_simulator.retention import MasteryConfig
 
 
 def _prefix():
@@ -40,6 +41,7 @@ def _target():
         tiers=torch.tensor([1, 2]),
         evidence=evidence,
         outcomes=torch.tensor([1.0, 0.0]),
+        mastery_before=torch.tensor([0.55, 0.55]),
         churn=torch.tensor([0.0, 1.0]),
         churn_mask=torch.ones(2, dtype=torch.bool),
         action_player=torch.tensor([0, 0, 1, 1]),
@@ -62,7 +64,8 @@ def _model():
 
 def test_predictive_objective_logs_finite_structural_terms() -> None:
     model = _model()
-    result = model.predictive_objective(_prefix(), _target(), kl_weight=0.5)
+    target = _target()
+    result = model.predictive_objective(_prefix(), target, kl_weight=0.5)
     expected = {
         "loss",
         "assignment_nll",
@@ -75,6 +78,12 @@ def test_predictive_objective_logs_finite_structural_terms() -> None:
     assert expected <= set(result)
     assert all(torch.isfinite(result[name]) for name in expected)
     assert result["skill_sample"].shape == (2, 4)
+    rate = MasteryConfig().update_rate
+    torch.testing.assert_close(
+        result["mastery_after"],
+        target.mastery_before
+        + rate * (target.outcomes - target.mastery_before),
+    )
 
 
 def test_predictive_objective_backpropagates_through_encoder_and_decoders() -> None:
@@ -112,6 +121,22 @@ def test_target_outcome_changes_its_decoder_loss() -> None:
     torch.manual_seed(299)
     one_loss = model.predictive_objective(prefix, target_one)["win_nll"]
     assert not torch.isclose(zero_loss, one_loss)
+
+
+def test_churn_loss_uses_mastery_not_win_head_output() -> None:
+    model = _model().eval()
+    prefix = _prefix()
+    target = _target()
+    baseline = model.predictive_objective(
+        prefix, target, sample_posterior=False
+    )["churn_nll"]
+    with torch.no_grad():
+        model.win_head.intercept.add_(100.0)
+        model.win_head.raw_skill.add_(100.0)
+    changed = model.predictive_objective(
+        prefix, target, sample_posterior=False
+    )["churn_nll"]
+    torch.testing.assert_close(baseline, changed)
 
 
 def test_masked_pre_landmark_churn_contributes_no_loss() -> None:

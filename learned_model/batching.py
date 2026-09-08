@@ -6,7 +6,7 @@ import numpy as np
 import torch
 
 from ..evidence import EVIDENCE_NAMES
-from ..retention import PlayerTrajectory
+from ..retention import MasteryConfig, PlayerTrajectory, update_mastery
 from ..scm import LEVELS, TIER_NAMES
 from ..spec import BENCHMARK_CONFIG
 from .model import PredictiveTarget
@@ -18,6 +18,7 @@ def build_prefix_target_batch(
     *,
     target_attempt: int,
     device: torch.device = torch.device("cpu"),
+    mastery_config: MasteryConfig = MasteryConfig(),
 ) -> tuple[dict[str, torch.Tensor], PredictiveTarget]:
     """Encode attempts before ``target_attempt`` and score that attempt only."""
     if target_attempt < 1:
@@ -71,6 +72,7 @@ def build_prefix_target_batch(
     target_tiers = []
     target_evidence = []
     target_outcomes = []
+    target_mastery_before = []
     target_churn = []
     target_action_player = []
     target_boards = []
@@ -103,6 +105,12 @@ def build_prefix_target_batch(
         target_tiers.append(tier_ids[episode.tier])
         target_evidence.append(episode.proxy)
         target_outcomes.append(episode.R)
+        mastery_before = mastery_config.initial
+        for record in prefix:
+            mastery_before = update_mastery(
+                mastery_before, record.episode.R, mastery_config
+            )
+        target_mastery_before.append(mastery_before)
         target_churn.append(target.churn_after)
         for step_index, action in enumerate(episode.actions):
             state = episode.states[step_index]
@@ -138,13 +146,9 @@ def build_prefix_target_batch(
         tiers=tensor(target_tiers, torch.long),
         evidence=tensor(np.asarray(target_evidence), torch.float32),
         outcomes=tensor(target_outcomes, torch.float32),
+        mastery_before=tensor(target_mastery_before, torch.float32),
         churn=tensor(target_churn, torch.float32),
-        churn_mask=torch.full(
-            (batch_size,),
-            target_attempt >= BENCHMARK_CONFIG.landmark_attempt,
-            dtype=torch.bool,
-            device=device,
-        ),
+        churn_mask=torch.ones((batch_size,), dtype=torch.bool, device=device),
         action_player=tensor(target_action_player, torch.long),
         boards=tensor(np.asarray(target_boards).reshape(-1, 64), torch.long),
         goal_colours=tensor(target_goal_colours, torch.long),

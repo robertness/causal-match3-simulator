@@ -6,6 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from match3_simulator.calibrate import load_win_propensity_model
 from match3_simulator.causal_queries import (
     AssignmentConfig,
     LandmarkRiskSet,
@@ -21,57 +22,31 @@ from match3_simulator.causal_queries import (
 from match3_simulator.retention import (
     CHURN_SCHEDULE,
     ChurnConfig,
+    MasteryConfig,
     WinPropensityModel,
-    challenge_mismatch_hazard,
+    expected_mastery_churn,
+    mastery_mismatch_hazard,
     sample_C,
+    update_mastery,
 )
-from match3_simulator.scm import LEVELS, TIER_LOGITS, TIER_NAMES, TIER_PROBS
+from match3_simulator.scm import LEVELS, TIER_LOGITS, TIER_NAMES
 from match3_simulator.spec import BENCHMARK_CONFIG, SKILL_COVARIANCE
 
 
 @pytest.fixture(scope="module")
 def synthetic_benchmark():
-    rng = np.random.default_rng(13)
-    n_players = 100_000
-    skills = rng.multivariate_normal(
-        np.zeros(SKILL_COVARIANCE.shape[0]),
-        SKILL_COVARIANCE,
-        size=n_players,
+    model = load_win_propensity_model()
+    cohort = generate_landmark_cohort(
+        model,
+        n_players=100_000,
+        seed=BENCHMARK_CONFIG.calibration_seeds[0],
     )
-    tiers = rng.choice(len(TIER_NAMES), size=n_players, p=TIER_PROBS)
-    tier_logits = np.asarray(TIER_LOGITS)[tiers]
-
-    coefficients = []
-    risk_sets = []
-    for level in LEVELS:
-        demand = level.demand_weights()
-        scale = np.sqrt(demand @ SKILL_COVARIANCE @ demand)
-        coefficients.append(tuple(1.6 * demand / scale))
-        effective_skill = skills @ demand / scale
-        risk_sets.append(
-            LandmarkRiskSet(
-                level_name=level.name,
-                skills=skills,
-                tier_indices=tiers,
-                assignment_locations=tier_logits + 0.8 * effective_skill,
-                assignment_sigma=0.75,
-            )
-        )
-
-    tier_intercepts = tuple(-0.35 * np.asarray(TIER_LOGITS))
-    model = WinPropensityModel(
-        level_names=tuple(level.name for level in LEVELS),
-        tier_names=TIER_NAMES,
-        intercepts=tuple(tier_intercepts for _ in LEVELS),
-        skill_coefficients=tuple(coefficients),
-        difficulty_coefficients=tuple(1.0 for _ in LEVELS),
-    )
-    return model, tuple(risk_sets)
+    return model, cohort.risk_sets
 
 
-def test_churn_hazard_is_symmetric_around_target() -> None:
-    probabilities = np.asarray([0.35, 0.55, 0.75])
-    hazard = challenge_mismatch_hazard(probabilities)
+def test_churn_hazard_is_symmetric_around_mastery_target() -> None:
+    mastery = np.asarray([0.15, 0.35, 0.55])
+    hazard = mastery_mismatch_hazard(mastery)
 
     assert hazard[1] < hazard[0]
     assert hazard[1] < hazard[2]
@@ -80,11 +55,40 @@ def test_churn_hazard_is_symmetric_around_target() -> None:
 
 def test_sample_c_has_no_direct_skill_or_treatment_input() -> None:
     parameters = inspect.signature(sample_C).parameters
+    assert "mastery_after" in parameters
     assert "skill" not in parameters
     assert "player" not in parameters
     assert "E" not in parameters
     assert "outcome" not in parameters
     assert sample_C(0.55, active=False) == 1
+
+
+def test_expected_churn_integrates_over_realized_outcome() -> None:
+    mastery_config = MasteryConfig(initial=0.55, update_rate=0.20)
+    churn_config = ChurnConfig(
+        intercept=-4.0,
+        deviation_coefficient=48.0,
+        mastery_target=0.55,
+    )
+    win_probability = np.asarray([0.0, 0.25, 1.0])
+    mastery_before = np.full(3, 0.55)
+    after_win = update_mastery(mastery_before, np.ones(3), mastery_config)
+    after_loss = update_mastery(mastery_before, np.zeros(3), mastery_config)
+    expected = (
+        win_probability * mastery_mismatch_hazard(after_win, churn_config)
+        + (1.0 - win_probability)
+        * mastery_mismatch_hazard(after_loss, churn_config)
+    )
+
+    np.testing.assert_allclose(
+        expected_mastery_churn(
+            win_probability,
+            mastery_before,
+            mastery_config=mastery_config,
+            churn_config=churn_config,
+        ),
+        expected,
+    )
 
 
 def test_oracle_curves_have_separated_reversing_recommendations(
@@ -97,8 +101,14 @@ def test_oracle_curves_have_separated_reversing_recommendations(
         assert comparison.recommendation_gap >= 1.0
         assert comparison.causal_recommendation_contrast >= 0.02
         assert comparison.observational_recommendation_contrast <= -0.02
-        assert comparison.causal_left_contrast >= 0.02
-        assert comparison.causal_right_contrast >= 0.02
+        assert (
+            comparison.causal_left_contrast
+            >= BENCHMARK_CONFIG.minimum_shoulder_contrast
+        )
+        assert (
+            comparison.causal_right_contrast
+            >= BENCHMARK_CONFIG.minimum_shoulder_contrast
+        )
         assert min(item.effective_sample_fraction for item in comparison.overlap) >= 0.20
 
 
@@ -114,8 +124,14 @@ def test_causal_curve_rises_on_both_sides_of_interior_optimum(
         optimum_index = int(np.flatnonzero(grid == optimum)[0])
         left_index = int(np.flatnonzero(grid == optimum - 1.0)[0])
         right_index = int(np.flatnonzero(grid == optimum + 1.0)[0])
-        assert comparison.causal[left_index] - comparison.causal[optimum_index] >= 0.02
-        assert comparison.causal[right_index] - comparison.causal[optimum_index] >= 0.02
+        assert (
+            comparison.causal[left_index] - comparison.causal[optimum_index]
+            >= BENCHMARK_CONFIG.minimum_shoulder_contrast
+        )
+        assert (
+            comparison.causal[right_index] - comparison.causal[optimum_index]
+            >= BENCHMARK_CONFIG.minimum_shoulder_contrast
+        )
 
 
 def test_randomized_assignment_collapses_observational_and_causal_curves(
@@ -127,6 +143,7 @@ def test_randomized_assignment_collapses_observational_and_causal_curves(
             level_name=risk_set.level_name,
             skills=risk_set.skills,
             tier_indices=risk_set.tier_indices,
+            mastery_before=risk_set.mastery_before,
             assignment_locations=np.zeros(len(risk_set.skills)),
             assignment_sigma=risk_set.assignment_sigma,
         )
@@ -165,6 +182,7 @@ def test_observational_curve_uses_nonuniform_assignment_weights(
             level_name=risk_set.level_name,
             skills=risk_set.skills,
             tier_indices=risk_set.tier_indices,
+            mastery_before=risk_set.mastery_before,
             assignment_locations=np.zeros(len(risk_set.skills)),
             assignment_sigma=risk_set.assignment_sigma,
         ),
@@ -186,12 +204,19 @@ def test_landmark_cohort_is_deterministic_and_clones_survivors(
     first = generate_landmark_cohort(model, n_players=1_000, seed=101)
     second = generate_landmark_cohort(model, n_players=1_000, seed=101)
 
-    assert first.n_active_players == first.n_initial_players
-    assert first.survival_fraction == 1.0
+    assert 0 < first.n_active_players < first.n_initial_players
+    assert first.survival_fraction == second.survival_fraction
     np.testing.assert_array_equal(first.active_player_ids, second.active_player_ids)
     for first_risk, second_risk in zip(first.risk_sets, second.risk_sets):
         np.testing.assert_array_equal(first_risk.skills, second_risk.skills)
         np.testing.assert_array_equal(first_risk.tier_indices, second_risk.tier_indices)
+        np.testing.assert_allclose(
+            first_risk.mastery_before, second_risk.mastery_before
+        )
+        assert np.all(
+            (first_risk.mastery_before >= 0.0)
+            & (first_risk.mastery_before <= 1.0)
+        )
         np.testing.assert_allclose(
             first_risk.assignment_locations, second_risk.assignment_locations
         )
@@ -225,11 +250,10 @@ def test_landmark_report_exposes_all_level_gates(synthetic_benchmark) -> None:
     report = evaluate_landmark_benchmark(
         model,
         n_players=100_000,
-        seed=109,
-        assignment=AssignmentConfig(skill_gain=0.8, sigma=0.65),
+        seed=BENCHMARK_CONFIG.validation_seeds[0],
     )
     assert report["passed"]
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert report["benchmark"]["validation_seeds"] == (
         BENCHMARK_CONFIG.validation_seeds
     )
@@ -243,16 +267,18 @@ def test_validation_suite_requires_every_preregistered_seed(
     synthetic_benchmark,
 ) -> None:
     model, _ = synthetic_benchmark
-    benchmark = replace(BENCHMARK_CONFIG, validation_seeds=(109, 113))
+    validation_seeds = BENCHMARK_CONFIG.validation_seeds[:2]
+    benchmark = replace(BENCHMARK_CONFIG, validation_seeds=validation_seeds)
     report = evaluate_validation_suite(
         model,
         n_players=100_000,
-        assignment=AssignmentConfig(skill_gain=0.8, sigma=0.65),
         benchmark=benchmark,
     )
     assert report["passed"]
-    assert report["validation_seeds"] == [109, 113]
-    assert [item["seed"] for item in report["seed_reports"]] == [109, 113]
+    assert report["validation_seeds"] == list(validation_seeds)
+    assert [item["seed"] for item in report["seed_reports"]] == list(
+        validation_seeds
+    )
     assert all(item["passed"] for item in report["seed_reports"])
 
 

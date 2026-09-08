@@ -89,8 +89,8 @@ DEFAULT_GOAL_COLOUR = 1
 
 #: Level-specific natural DDA strength and exploration noise, aligned with
 #: ``LEVELS``. Scalar overrides remain available for controlled ablations.
-DDA_GAINS: tuple[float, ...] = (1.5, 0.8, 1.0)
-E_SIGMAS: tuple[float, ...] = (0.65, 0.70, 1.00)
+DDA_GAINS: tuple[float, ...] = (4.0, 4.0, 8.0)
+E_SIGMAS: tuple[float, ...] = (1.2, 1.2, 2.4)
 DEFAULT_DDA_GAIN = 0.8
 DEFAULT_E_SIGMA = 0.65
 

@@ -45,7 +45,7 @@ def test_mastery_hazard_is_symmetric_around_target() -> None:
     config = ChurnConfig(
         intercept=-4.0,
         deviation_coefficient=48.0,
-        target_mastery=0.55,
+        mastery_target=0.55,
     )
     hazard = mastery_mismatch_hazard(np.asarray([0.35, 0.55, 0.75]), config)
 
