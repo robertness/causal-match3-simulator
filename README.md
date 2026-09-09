@@ -14,7 +14,8 @@ and world-model experiments.
 - `A_t`: adjacent-tile swap
 - `X`: typed task evidence generated through a sparse multidimensional Q-matrix
 - `R`: indicator that the player completed the level within the move budget
-- `C`: absorbing churn after the landmark attempt
+- `M`: experienced mastery updated from realized completion
+- `C`: absorbing next-attempt churn conditioned on post-attempt mastery
 
 The primary target is the level-specific difficulty minimizing next-attempt churn:
 
@@ -22,11 +23,14 @@ The primary target is the level-specific difficulty minimizing next-attempt chur
 argmin_e P(C_i,21 = 1 | do(E_i,20 = e), L_i,20 = l)
 ```
 
-Attempts 1--19 form an observation-only warm-up in the primary benchmark. Churn
-is U-shaped in oracle win propensity around a target of `0.55`: play that is too
-easy or too hard raises churn. In natural data, the DDA serves harder content to
-stronger players, while skill also improves action quality. The observational
-and interventional churn-optimal settings are therefore deliberately different.
+Attempts 1--19 form the strict history prefix for the landmark query. After each
+completed attempt, realized completion updates mastery,
+`M_next = M + rho * (R - M)`, and active players face a level-specific,
+U-shaped churn hazard around the mastery target. The frozen win-propensity model
+is retained only as an engine-response diagnostic; it is not a parent of churn.
+In natural data, the DDA serves harder content to stronger players, while skill
+also improves action quality. Calibration pilots that fail the preregistered
+engine gates remain pilot artifacts rather than benchmark results.
 
 `D` is sampled from `p(D | L)`: there is no `K -> D` edge. Skill adaptation acts
 through `K -> E`, and the tier has a separate state effect through its move
@@ -88,15 +92,28 @@ Generate ordered player histories after that artifact exists:
 match3-simulate --mode players -n 100 --max-attempts 30 --out data/players
 ```
 
-Validate every preregistered landmark seed and render the representative curve:
+This writes deployable `episodes.csv` and `transitions.npz`, a separate
+simulator-only `oracle/attempts.csv`, and a manifest containing configuration,
+row counts, code revision, and artifact hashes. True `K`, true `M`, oracle win
+propensity, and churn probabilities never appear in the deployable attempt
+table.
+
+Run a board-engine calibration pilot and render its curves:
 
 ```bash
-python -m match3_simulator.causal_queries --all-validation-seeds \
-  --players 20000 --bootstrap 200 --require-pass \
-  --out data/landmark-validation-report.json
+python -m match3_simulator.engine_benchmark \
+  --players 512 --engine-players 512 --rollouts-per-player 8 \
+  --workers 8 --bootstrap 2000 --status pilot \
+  --out data/engine-calibration
 python -m match3_simulator.plot_queries \
-  data/landmark-validation-report.json --out media/landmark_churn_curves.png
+  data/engine-calibration/report.json --out media/landmark_churn_curves.png
 ```
+
+The engine benchmark freezes `(K,D,L,M)` at the landmark and reuses one
+exogenous seed across every candidate `E`. Since `E` changes only the quota, one
+full-budget goal total is thresholded over the grid; tests require this optimized
+construction to match direct per-`E` engine runs exactly. Whole-player bootstrap
+replicates preserve all paired interventions and gameplay replicates.
 
 The `learned_model` package contains the continuous strict-prefix encoder,
 support-aware structural decoder heads, exact legal-action masking, spatial
@@ -131,13 +148,11 @@ results rather than a final causal release.
 
 `ground_truth_model(dda_gain=...)` controls how strongly the assignment policy
 adapts difficulty to skill. `ground_truth_model(e_sigma=...)` controls residual
-within-stratum variation in served difficulty. Passing `E=e` clamps the treatment
-and samples from `do(E=e)`.
+within-stratum variation in served difficulty. Level-aligned `dda_gains=` and
+`e_sigmas=` support calibration runs without changing module defaults. Passing
+`E=e` clamps the treatment and samples from `do(E=e)`.
 
-The validated natural assignment uses level-specific `(gain, residual sd)`:
-`orchard=(1.5, 0.65)`, `harbour=(0.8, 0.70)`, and
-`foundry=(1.0, 1.00)`. The churn target remains globally `0.55`, while mismatch
-curvature is `(128, 64, 64)` for the same level order. These schedules pass the
-recommendation-reversal, bilateral U-shape, bootstrap-direction, and overlap
-gates on all preregistered validation seeds for the current engine response
-surface.
+The engine CLI likewise accepts explicit mastery, churn, assignment, and grid
+parameters. Parameters selected on calibration seeds are not promoted to live
+defaults until all levels pass on every held-out validation seed, including
+player-bootstrap direction and overlap gates.
