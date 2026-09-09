@@ -9,6 +9,7 @@ from ..evidence import EVIDENCE_NAMES
 from ..retention import MasteryConfig, PlayerTrajectory, update_mastery
 from ..scm import LEVELS, TIER_NAMES
 from ..spec import BENCHMARK_CONFIG
+from .data import gameplay_transition_dataset_from_episodes
 from .model import PredictiveTarget
 from .tokens import action_to_index, legal_mask
 
@@ -162,4 +163,47 @@ def build_prefix_target_batch(
     return prefix_batch, predictive_target
 
 
-__all__ = ["build_prefix_target_batch"]
+def build_generative_training_batch(
+    trajectories: list[PlayerTrajectory],
+    *,
+    target_attempt: int,
+    device: torch.device = torch.device("cpu"),
+    mastery_config: MasteryConfig = MasteryConfig(),
+) -> tuple[
+    dict[str, torch.Tensor],
+    PredictiveTarget,
+    dict[str, torch.Tensor],
+    torch.Tensor,
+]:
+    """Build aligned structural, dynamics, and isolated oracle tensors."""
+    prefix, target = build_prefix_target_batch(
+        trajectories,
+        target_attempt=target_attempt,
+        device=device,
+        mastery_config=mastery_config,
+    )
+    target_records = [
+        next(
+            record
+            for record in trajectory.attempts
+            if record.attempt_id == target_attempt
+        )
+        for trajectory in trajectories
+    ]
+    transition_data = gameplay_transition_dataset_from_episodes(
+        [record.episode for record in target_records],
+        player_ids=[trajectory.player_id for trajectory in trajectories],
+        attempt_ids=[target_attempt] * len(trajectories),
+    )
+    transitions = transition_data.batch(transition_data.episodes, device=device)
+    oracle_skill = torch.as_tensor(
+        np.asarray(
+            [trajectory.player.as_array() for trajectory in trajectories]
+        ),
+        dtype=torch.float32,
+        device=device,
+    )
+    return prefix, target, transitions, oracle_skill
+
+
+__all__ = ["build_generative_training_batch", "build_prefix_target_batch"]

@@ -12,6 +12,8 @@ from match3_simulator.learned_model.arms import (
 )
 from match3_simulator.learned_model.encoder import PrefixEncoderConfig
 from match3_simulator.learned_model.generative import GameplayRSSMConfig
+from match3_simulator.learned_model.model import PredictiveTarget
+from match3_simulator.learned_model.train import train_generative_world_model_step
 
 
 def _config() -> GenerativeModelConfig:
@@ -24,7 +26,7 @@ def _config() -> GenerativeModelConfig:
             stochastic_size=8,
         ),
         prefix=PrefixEncoderConfig(
-            proxy_dimensions=4,
+            proxy_dimensions=12,
             hidden_size=16,
         ),
         behavior=ActionPolicyConfig(
@@ -37,7 +39,7 @@ def _config() -> GenerativeModelConfig:
 
 def _prefix() -> dict[str, torch.Tensor]:
     torch.manual_seed(3801)
-    batch, episodes, steps, proxies = 2, 3, 2, 4
+    batch, episodes, steps, proxies = 2, 3, 2, 12
     episode_mask = torch.tensor(
         [[True, True, False], [True, False, False]]
     )
@@ -74,6 +76,33 @@ def _transition_batch() -> dict[str, torch.Tensor]:
         "served_difficulty": torch.tensor([-0.5, 0.75]),
         "step_mask": torch.ones(batch, steps, dtype=torch.bool),
     }
+
+
+def _target() -> PredictiveTarget:
+    torch.manual_seed(3804)
+    legal_actions = torch.zeros(3, 128, dtype=torch.bool)
+    legal_actions[:, :4] = True
+    evidence = torch.tensor(
+        [[2.0, 0.5, 1.0, 0.4, 0.6, 0.5, 0.5, 0.0, 0.4, 0.5, 1.2, 0.5]]
+    ).expand(2, -1)
+    return PredictiveTarget(
+        episode_player=torch.tensor([0, 1]),
+        served_difficulty=torch.tensor([-0.2, 0.4]),
+        levels=torch.tensor([0, 1]),
+        tiers=torch.tensor([1, 2]),
+        evidence=evidence,
+        outcomes=torch.tensor([1.0, 0.0]),
+        mastery_before=torch.tensor([0.4, 0.3]),
+        churn=torch.tensor([0.0, 1.0]),
+        churn_mask=torch.ones(2, dtype=torch.bool),
+        action_player=torch.tensor([0, 1, 0]),
+        boards=torch.randint(0, 6, (3, 64)),
+        goal_colours=torch.tensor([1, 2, 1]),
+        moves_left=torch.tensor([20, 19, 18]),
+        goals_left=torch.tensor([24, 20, 17]),
+        legal_actions=legal_actions,
+        actions=torch.tensor([0, 1, 2]),
+    )
 
 
 def test_matched_causal_and_oracle_arms_have_exact_parameter_parity() -> None:
@@ -183,3 +212,64 @@ def test_all_arms_share_skill_free_transition_mechanics() -> None:
         torch.testing.assert_close(
             result["counter_mean"], reference["counter_mean"]
         )
+
+
+@pytest.mark.parametrize("arm", list(ModelArm))
+def test_every_arm_backpropagates_one_full_generative_objective(
+    arm: ModelArm,
+) -> None:
+    torch.manual_seed(3807)
+    model = GenerativeWorldModel(arm, _config())
+    oracle_skill = torch.randn(2, 4) if arm is ModelArm.ORACLE else None
+    result = model.objective(
+        prefix=_prefix(),
+        target=_target(),
+        transitions=_transition_batch(),
+        oracle_skill=oracle_skill,
+        context_kl_weight=0.2,
+        dynamics_kl_weight=0.2,
+    )
+
+    assert {
+        "loss",
+        "assignment_nll",
+        "evidence_nll",
+        "win_nll",
+        "churn_nll",
+        "action_nll",
+        "context_kl",
+        "board_nll",
+        "counter_mse",
+        "dynamics_kl",
+    } <= set(result)
+    assert all(torch.isfinite(result[name]) for name in result if name != "context")
+    result["loss"].backward()
+    assert model.dynamics.rssm.recurrent.weight_hh.grad is not None
+    assert model.behavior.action_head[0].weight.grad is not None
+    assert model.assignment_head.raw_skill.grad is not None
+    assert model.win_head.raw_skill.grad is not None
+    assert model.churn_head.raw_deviation.grad is not None
+    if arm is ModelArm.CAUSAL:
+        assert model.prefix_encoder is not None
+        assert model.prefix_encoder.posterior.weight.grad is not None
+
+
+@pytest.mark.parametrize("arm", list(ModelArm))
+def test_every_arm_completes_one_optimizer_step(arm: ModelArm) -> None:
+    torch.manual_seed(3809)
+    model = GenerativeWorldModel(arm, _config())
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    before = model.dynamics.rssm.recurrent.weight_hh.detach().clone()
+    metrics = train_generative_world_model_step(
+        model,
+        prefix=_prefix(),
+        target=_target(),
+        transitions=_transition_batch(),
+        optimizer=optimizer,
+        oracle_skill=torch.randn(2, 4) if arm is ModelArm.ORACLE else None,
+        context_kl_weight=0.2,
+        dynamics_kl_weight=0.2,
+    )
+
+    assert all(torch.isfinite(torch.tensor(value)) for value in metrics.values())
+    assert not torch.equal(before, model.dynamics.rssm.recurrent.weight_hh.detach())

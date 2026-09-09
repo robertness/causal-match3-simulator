@@ -295,6 +295,88 @@ def load_gameplay_transition_dataset(
         )
 
 
+def gameplay_transition_dataset_from_episodes(
+    episodes: list[Episode],
+    *,
+    player_ids: list[int] | None = None,
+    attempt_ids: list[int] | None = None,
+) -> GameplayTransitionDataset:
+    """Convert in-memory episodes to the logged generative sequence schema."""
+    if not episodes:
+        raise ValueError("at least one episode is required")
+    if (player_ids is None) != (attempt_ids is None):
+        raise ValueError("player_ids and attempt_ids must be supplied together")
+    if player_ids is None:
+        player_ids = list(range(len(episodes)))
+        attempt_ids = [1] * len(episodes)
+    assert attempt_ids is not None
+    if len(player_ids) != len(episodes) or len(attempt_ids) != len(episodes):
+        raise ValueError("trajectory identifiers must align with episodes")
+
+    level_ids = {level.name: index for index, level in enumerate(LEVELS)}
+    tier_ids = {tier: index for index, tier in enumerate(TIER_NAMES)}
+    rows: dict[str, list] = {
+        name: []
+        for name in (
+            "episode_ids",
+            "player_ids",
+            "attempt_ids",
+            "step_ids",
+            "boards",
+            "next_boards",
+            "actions",
+            "goal_colours",
+            "moves_left",
+            "goals_left",
+            "next_moves_left",
+            "next_goals_left",
+            "levels",
+            "tiers",
+            "served_difficulty",
+        )
+    }
+    for episode_index, episode in enumerate(episodes):
+        for step_index, action in enumerate(episode.actions):
+            state = episode.states[step_index]
+            next_state = episode.states[step_index + 1]
+            rows["episode_ids"].append(episode_index)
+            rows["player_ids"].append(player_ids[episode_index])
+            rows["attempt_ids"].append(attempt_ids[episode_index])
+            rows["step_ids"].append(step_index)
+            rows["boards"].append(state.board.ravel())
+            rows["next_boards"].append(next_state.board.ravel())
+            rows["actions"].append(action_to_index(action))
+            rows["goal_colours"].append(state.goal_colour)
+            rows["moves_left"].append(state.moves_left)
+            rows["goals_left"].append(state.goals_left)
+            rows["next_moves_left"].append(next_state.moves_left)
+            rows["next_goals_left"].append(next_state.goals_left)
+            rows["levels"].append(level_ids[episode.level.name])
+            rows["tiers"].append(tier_ids[episode.tier])
+            rows["served_difficulty"].append(episode.E)
+    if not rows["actions"]:
+        raise ValueError("episodes contain no observed actions")
+    return GameplayTransitionDataset(
+        episode_ids=np.asarray(rows["episode_ids"], dtype=np.int64),
+        player_ids=np.asarray(rows["player_ids"], dtype=np.int64),
+        attempt_ids=np.asarray(rows["attempt_ids"], dtype=np.int64),
+        step_ids=np.asarray(rows["step_ids"], dtype=np.int64),
+        boards=np.asarray(rows["boards"], dtype=np.int8),
+        next_boards=np.asarray(rows["next_boards"], dtype=np.int8),
+        actions=np.asarray(rows["actions"], dtype=np.int64),
+        goal_colours=np.asarray(rows["goal_colours"], dtype=np.int64),
+        moves_left=np.asarray(rows["moves_left"], dtype=np.int64),
+        goals_left=np.asarray(rows["goals_left"], dtype=np.int64),
+        next_moves_left=np.asarray(rows["next_moves_left"], dtype=np.int64),
+        next_goals_left=np.asarray(rows["next_goals_left"], dtype=np.int64),
+        levels=np.asarray(rows["levels"], dtype=np.int64),
+        tiers=np.asarray(rows["tiers"], dtype=np.int64),
+        served_difficulty=np.asarray(
+            rows["served_difficulty"], dtype=np.float32
+        ),
+    )
+
+
 def action_dataset_from_episodes(
     episodes: list[Episode],
     *,
@@ -470,6 +552,7 @@ __all__ = [
     "GameplayTransitionDataset",
     "action_dataset_from_episodes",
     "action_dataset_from_trajectories",
+    "gameplay_transition_dataset_from_episodes",
     "load_gameplay_transition_dataset",
     "split_action_dataset_by_episode",
     "split_action_dataset_by_player",

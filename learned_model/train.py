@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from .action_policy import ContinuousActionPolicy
+from .arms import GenerativeWorldModel
 from .data import ActionDataset
 from .generative import GameplayRSSM
 from .model import ContinuousCausalVAE, PredictiveTarget
@@ -103,6 +104,61 @@ def train_gameplay_rssm_step(
         name: float(result[name].detach())
         for name in ("loss", "board_nll", "counter_mse", "kl")
     } | {"gradient_norm": float(gradient_norm)}
+
+
+def train_generative_world_model_step(
+    model: GenerativeWorldModel,
+    *,
+    prefix: dict[str, torch.Tensor],
+    target: PredictiveTarget,
+    transitions: dict[str, torch.Tensor],
+    optimizer: torch.optim.Optimizer,
+    oracle_skill: torch.Tensor | None = None,
+    context_kl_weight: float = 1.0,
+    dynamics_kl_weight: float = 1.0,
+    gradient_clip: float = 1.0,
+) -> dict[str, float]:
+    """Run one matched structural and generative optimizer step."""
+    if gradient_clip <= 0:
+        raise ValueError("gradient_clip must be positive")
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    result = model.objective(
+        prefix=prefix,
+        target=target,
+        transitions=transitions,
+        oracle_skill=oracle_skill,
+        context_kl_weight=context_kl_weight,
+        dynamics_kl_weight=dynamics_kl_weight,
+        sample_context=True,
+        sample_dynamics=True,
+    )
+    loss = result["loss"]
+    assert isinstance(loss, torch.Tensor)
+    loss.backward()
+    gradient_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(), gradient_clip
+    )
+    optimizer.step()
+    names = (
+        "loss",
+        "assignment_nll",
+        "evidence_nll",
+        "win_nll",
+        "churn_nll",
+        "action_nll",
+        "context_kl",
+        "board_nll",
+        "counter_mse",
+        "dynamics_kl",
+    )
+    metrics = {}
+    for name in names:
+        value = result[name]
+        assert isinstance(value, torch.Tensor)
+        metrics[name] = float(value.detach())
+    metrics["gradient_norm"] = float(gradient_norm)
+    return metrics
 
 
 @torch.no_grad()
@@ -448,6 +504,7 @@ __all__ = [
     "action_nll",
     "evaluate_action_policy",
     "resolve_device",
+    "train_generative_world_model_step",
     "train_gameplay_rssm_step",
     "train_action_policy",
     "evaluate_continuous_vae",

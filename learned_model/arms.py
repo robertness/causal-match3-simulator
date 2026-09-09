@@ -7,11 +7,20 @@ from enum import Enum
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
+from ..retention import MasteryConfig
 from .action_policy import ActionPolicyConfig, ContinuousActionPolicy
 from .encoder import CausalPrefixEncoder, PrefixEncoderConfig
 from .generative import GameplayRSSM, GameplayRSSMConfig
-from .heads import CorrelatedSkillTransform
+from .heads import (
+    AssignmentHead,
+    ChurnHead,
+    CorrelatedSkillTransform,
+    EvidenceHead,
+    WinHead,
+)
+from .model import PredictiveTarget
 
 
 class ModelArm(str, Enum):
@@ -26,6 +35,7 @@ class GenerativeModelConfig:
     dynamics: GameplayRSSMConfig = field(default_factory=GameplayRSSMConfig)
     prefix: PrefixEncoderConfig = field(default_factory=PrefixEncoderConfig)
     behavior: ActionPolicyConfig = field(default_factory=ActionPolicyConfig)
+    mastery: MasteryConfig = field(default_factory=MasteryConfig)
 
     def __post_init__(self) -> None:
         if self.dynamics.n_colours != self.prefix.n_colours:
@@ -69,6 +79,22 @@ class GenerativeWorldModel(nn.Module):
             else CausalPrefixEncoder(config.prefix)
         )
         self.skill_transform = CorrelatedSkillTransform()
+        self.assignment_head = AssignmentHead(
+            n_levels=config.prefix.n_levels,
+            n_tiers=config.prefix.n_tiers,
+            skill_dimensions=config.prefix.skill_dimensions,
+        )
+        self.evidence_head = EvidenceHead(
+            skill_dimensions=config.prefix.skill_dimensions,
+            evidence_dimensions=config.prefix.proxy_dimensions,
+            n_levels=config.prefix.n_levels,
+        )
+        self.win_head = WinHead(
+            n_levels=config.prefix.n_levels,
+            n_tiers=config.prefix.n_tiers,
+            skill_dimensions=config.prefix.skill_dimensions,
+        )
+        self.churn_head = ChurnHead(n_levels=config.prefix.n_levels)
 
     def player_context(
         self,
@@ -153,6 +179,141 @@ class GenerativeWorldModel(nn.Module):
             sample_posterior=sample_posterior,
         )
 
+    def structural_objective(
+        self,
+        *,
+        prefix: dict[str, torch.Tensor],
+        target: PredictiveTarget,
+        oracle_skill: torch.Tensor | None = None,
+        context_kl_weight: float = 1.0,
+        sample_context: bool = True,
+    ) -> dict[str, torch.Tensor | PlayerContext]:
+        """Score selection, evidence, behavior, completion, and churn."""
+        if context_kl_weight < 0:
+            raise ValueError("context_kl_weight must be non-negative")
+        context = self.player_context(
+            prefix=prefix,
+            oracle_skill=oracle_skill,
+            sample=sample_context,
+        )
+        batch_size = context.skill.shape[0]
+        if torch.any(
+            (target.episode_player < 0) | (target.episode_player >= batch_size)
+        ):
+            raise ValueError("episode_player index outside context batch")
+        if torch.any(
+            (target.action_player < 0) | (target.action_player >= batch_size)
+        ):
+            raise ValueError("action_player index outside context batch")
+
+        episode_skill = context.skill[target.episode_player.long()]
+        assignment_nll = -self.assignment_head.log_prob(
+            target.served_difficulty,
+            episode_skill,
+            target.levels.long(),
+            target.tiers.long(),
+        ).mean()
+        evidence_nll = -self.evidence_head.log_prob(
+            target.evidence,
+            episode_skill,
+            target.levels.long(),
+        ).mean()
+        win_logits = self.win_head.logits(
+            target.served_difficulty,
+            episode_skill,
+            target.levels.long(),
+            target.tiers.long(),
+        )
+        win_nll = F.binary_cross_entropy_with_logits(
+            win_logits, target.outcomes.to(win_logits.dtype)
+        )
+        mastery_before = target.mastery_before.to(win_logits.dtype)
+        mastery_after = mastery_before + self.config.mastery.update_rate * (
+            target.outcomes.to(win_logits.dtype) - mastery_before
+        )
+        churn_logits = self.churn_head.logits(
+            mastery_after, target.levels.long()
+        )
+        churn_losses = F.binary_cross_entropy_with_logits(
+            churn_logits,
+            target.churn.to(churn_logits.dtype),
+            reduction="none",
+        )
+        churn_mask = target.churn_mask.to(churn_losses.dtype)
+        churn_nll = (churn_losses * churn_mask).sum() / churn_mask.sum().clamp_min(
+            1.0
+        )
+        if target.actions.numel():
+            action_nll = self.behavior.negative_log_likelihood(
+                action=target.actions,
+                board=target.boards,
+                goal_colour=target.goal_colours,
+                moves_left=target.moves_left,
+                goals_left=target.goals_left,
+                skill=context.skill[target.action_player.long()],
+                legal_actions=target.legal_actions,
+            )
+        else:
+            action_nll = context.skill.sum() * 0.0
+        context_kl = context.kl.mean()
+        loss = (
+            assignment_nll
+            + evidence_nll
+            + win_nll
+            + churn_nll
+            + action_nll
+            + context_kl_weight * context_kl
+        )
+        return {
+            "loss": loss,
+            "assignment_nll": assignment_nll,
+            "evidence_nll": evidence_nll,
+            "win_nll": win_nll,
+            "churn_nll": churn_nll,
+            "action_nll": action_nll,
+            "context_kl": context_kl,
+            "context": context,
+        }
+
+    def objective(
+        self,
+        *,
+        prefix: dict[str, torch.Tensor],
+        target: PredictiveTarget,
+        transitions: dict[str, torch.Tensor],
+        oracle_skill: torch.Tensor | None = None,
+        context_kl_weight: float = 1.0,
+        dynamics_kl_weight: float = 1.0,
+        sample_context: bool = True,
+        sample_dynamics: bool = True,
+    ) -> dict[str, torch.Tensor | PlayerContext]:
+        """Combine the matched structural and generative training terms."""
+        structural = self.structural_objective(
+            prefix=prefix,
+            target=target,
+            oracle_skill=oracle_skill,
+            context_kl_weight=context_kl_weight,
+            sample_context=sample_context,
+        )
+        dynamics = self.transition_objective(
+            transitions,
+            kl_weight=dynamics_kl_weight,
+            sample_posterior=sample_dynamics,
+        )
+        return {
+            "loss": structural["loss"] + dynamics["loss"],
+            "assignment_nll": structural["assignment_nll"],
+            "evidence_nll": structural["evidence_nll"],
+            "win_nll": structural["win_nll"],
+            "churn_nll": structural["churn_nll"],
+            "action_nll": structural["action_nll"],
+            "context_kl": structural["context_kl"],
+            "board_nll": dynamics["board_nll"],
+            "counter_mse": dynamics["counter_mse"],
+            "dynamics_kl": dynamics["kl"],
+            "context": structural["context"],
+        }
+
     def behavior_log_probabilities(
         self,
         *,
@@ -202,6 +363,15 @@ class GenerativeWorldModel(nn.Module):
             "dynamics": count(self.dynamics),
             "behavior": count(self.behavior),
             "slow_context": count(self.prefix_encoder),
+            "structural_heads": sum(
+                count(module)
+                for module in (
+                    self.assignment_head,
+                    self.evidence_head,
+                    self.win_head,
+                    self.churn_head,
+                )
+            ),
         }
         counts["total"] = sum(counts.values())
         return counts

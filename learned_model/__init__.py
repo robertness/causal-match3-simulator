@@ -8,12 +8,13 @@ from .arms import (
     PlayerContext,
     build_generative_arms,
 )
-from .batching import build_prefix_target_batch
+from .batching import build_generative_training_batch, build_prefix_target_batch
 from .data import (
     ActionDataset,
     GameplayTransitionDataset,
     action_dataset_from_episodes,
     action_dataset_from_trajectories,
+    gameplay_transition_dataset_from_episodes,
     load_gameplay_transition_dataset,
     split_action_dataset_by_episode,
     split_action_dataset_by_player,
@@ -39,7 +40,12 @@ from .train import (
     fit_win_head,
     train_action_policy,
     train_continuous_vae,
+    train_generative_world_model_step,
     train_gameplay_rssm_step,
+)
+from .matched_experiment import (
+    MatchedGenerativeSmokeConfig,
+    run_matched_generative_smoke,
 )
 from .tokens import ACTION_SLOTS, action_to_index, index_to_action, legal_mask
 
@@ -64,6 +70,7 @@ __all__ = [
     "GenerativeModelConfig",
     "GenerativeWorldModel",
     "ModelArm",
+    "MatchedGenerativeSmokeConfig",
     "NetworkActionPolicy",
     "PlayerContext",
     "PrefixEncoderConfig",
@@ -74,16 +81,20 @@ __all__ = [
     "action_dataset_from_episodes",
     "action_dataset_from_trajectories",
     "build_prefix_target_batch",
+    "build_generative_training_batch",
     "build_generative_arms",
     "evaluate_action_policy",
     "fit_win_head",
+    "gameplay_transition_dataset_from_episodes",
     "index_to_action",
     "legal_mask",
     "load_gameplay_transition_dataset",
+    "run_matched_generative_smoke",
     "split_action_dataset_by_episode",
     "split_action_dataset_by_player",
     "split_player_trajectories",
     "train_action_policy",
     "train_continuous_vae",
+    "train_generative_world_model_step",
     "train_gameplay_rssm_step",
 ]
