@@ -6,7 +6,12 @@ import numpy as np
 import torch
 
 from ..evidence import EVIDENCE_NAMES
-from ..retention import MasteryConfig, PlayerTrajectory, update_mastery
+from ..retention import (
+    MasteryConfig,
+    PlayerTrajectory,
+    completion_margin,
+    update_mastery,
+)
 from ..scm import LEVELS, TIER_NAMES
 from ..spec import BENCHMARK_CONFIG, BenchmarkConfig
 from .data import gameplay_transition_dataset_from_episodes
@@ -75,6 +80,7 @@ def build_prefix_target_batch(
     target_evidence = []
     target_outcomes = []
     target_mastery_before = []
+    target_completion_margin = []
     target_churn = []
     target_action_player = []
     target_boards = []
@@ -113,6 +119,7 @@ def build_prefix_target_batch(
                 mastery_before, record.episode.R, mastery_config
             )
         target_mastery_before.append(mastery_before)
+        target_completion_margin.append(completion_margin(episode))
         target_churn.append(target.churn_after)
         for step_index, action in enumerate(episode.actions):
             state = episode.states[step_index]
@@ -149,6 +156,7 @@ def build_prefix_target_batch(
         evidence=tensor(np.asarray(target_evidence), torch.float32),
         outcomes=tensor(target_outcomes, torch.float32),
         mastery_before=tensor(target_mastery_before, torch.float32),
+        completion_margin=tensor(target_completion_margin, torch.float32),
         churn=tensor(target_churn, torch.float32),
         churn_mask=torch.ones((batch_size,), dtype=torch.bool, device=device),
         churn_scale=torch.full(

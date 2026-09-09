@@ -42,6 +42,7 @@ def _target():
         evidence=evidence,
         outcomes=torch.tensor([1.0, 0.0]),
         mastery_before=torch.tensor([0.55, 0.55]),
+        completion_margin=torch.tensor([0.2, -0.3]),
         churn=torch.tensor([0.0, 1.0]),
         churn_mask=torch.ones(2, dtype=torch.bool),
         churn_scale=torch.ones(2),
@@ -158,7 +159,9 @@ def test_churn_loss_respects_attempt_hazard_scale() -> None:
     )
     probability = 0.005 * torch.sigmoid(
         model.churn_head.logits(
-            result["mastery_after"], target.levels.long()
+            result["mastery_after"],
+            target.levels.long(),
+            completion_margin=target.completion_margin,
         )
     )
     expected = torch.nn.functional.binary_cross_entropy(

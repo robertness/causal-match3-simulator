@@ -93,6 +93,7 @@ def _target() -> PredictiveTarget:
         evidence=evidence,
         outcomes=torch.tensor([1.0, 0.0]),
         mastery_before=torch.tensor([0.4, 0.3]),
+        completion_margin=torch.tensor([0.2, -0.3]),
         churn=torch.tensor([0.0, 1.0]),
         churn_mask=torch.ones(2, dtype=torch.bool),
         churn_scale=torch.ones(2),

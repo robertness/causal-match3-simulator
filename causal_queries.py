@@ -15,6 +15,7 @@ from .retention import (
     ChurnSchedule,
     MasteryConfig,
     WinPropensityModel,
+    completion_margin,
     expected_mastery_churn,
     mastery_mismatch_hazard,
     update_mastery,
@@ -161,6 +162,7 @@ class EngineOutcomeSurface:
     outcomes: np.ndarray
     outcome_method: str = "direct_per_e"
     goal_totals: np.ndarray | None = None
+    completion_margins: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         grid = np.asarray(self.grid, dtype=np.float64)
@@ -186,11 +188,21 @@ class EngineOutcomeSurface:
         )
         if goal_totals is not None and goal_totals.shape != seeds.shape:
             raise ValueError("goal_totals must have shape (players, replicates)")
+        margins = (
+            None
+            if self.completion_margins is None
+            else np.asarray(self.completion_margins, dtype=np.float64)
+        )
+        if margins is not None and margins.shape != outcomes.shape:
+            raise ValueError("completion_margins must align with outcomes")
+        if margins is not None and np.any((margins < -1.0) | (margins > 1.0)):
+            raise ValueError("completion_margins must lie in [-1, 1]")
         object.__setattr__(self, "grid", grid)
         object.__setattr__(self, "player_ids", player_ids)
         object.__setattr__(self, "rollout_seeds", seeds)
         object.__setattr__(self, "outcomes", outcomes)
         object.__setattr__(self, "goal_totals", goal_totals)
+        object.__setattr__(self, "completion_margins", margins)
 
 
 @dataclass(frozen=True)
@@ -225,6 +237,7 @@ class EngineWarmupPanel:
     exogenous_seeds: np.ndarray
     assignment_gains: np.ndarray
     assignment_sigmas: np.ndarray
+    warmup_completion_margins: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         player_ids = np.asarray(self.player_ids, dtype=np.int64)
@@ -236,6 +249,11 @@ class EngineWarmupPanel:
         seeds = np.asarray(self.exogenous_seeds, dtype=np.uint32)
         gains = np.asarray(self.assignment_gains, dtype=np.float64)
         sigmas = np.asarray(self.assignment_sigmas, dtype=np.float64)
+        margins = (
+            np.empty((n_players, 0), dtype=np.float64)
+            if self.warmup_completion_margins is None
+            else np.asarray(self.warmup_completion_margins, dtype=np.float64)
+        )
         n_players = len(player_ids)
         n_warmup = self.landmark_attempt - 1
         n_levels = len(ASSIGNMENT_SCHEDULE.level_names)
@@ -263,6 +281,10 @@ class EngineWarmupPanel:
             raise ValueError("assignment parameters must align with levels")
         if np.any(gains < 0.0) or np.any(sigmas <= 0.0):
             raise ValueError("assignment parameters are outside their support")
+        if margins.shape not in {(n_players, 0), outcomes.shape}:
+            raise ValueError("warm-up margins must be empty or align with outcomes")
+        if margins.size and np.any((margins < -1.0) | (margins > 1.0)):
+            raise ValueError("warm-up margins must lie in [-1, 1]")
         object.__setattr__(self, "player_ids", player_ids)
         object.__setattr__(self, "skills", skills)
         object.__setattr__(self, "warmup_outcomes", outcomes)
@@ -272,6 +294,7 @@ class EngineWarmupPanel:
         object.__setattr__(self, "exogenous_seeds", seeds)
         object.__setattr__(self, "assignment_gains", gains)
         object.__setattr__(self, "assignment_sigmas", sigmas)
+        object.__setattr__(self, "warmup_completion_margins", margins)
 
 
 @dataclass(frozen=True)
@@ -404,7 +427,7 @@ def _engine_warmup_summary(
 
 def _engine_warmup_panel_summary(
     payload: tuple[int, int, int, AssignmentSchedule],
-) -> tuple[int, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Generate one complete pre-landmark gameplay history without attrition."""
     player_id, seed, n_warmup, assignment = payload
     import pyro
@@ -418,6 +441,7 @@ def _engine_warmup_panel_summary(
     player = sample_K()
     outcomes = np.empty(n_warmup, dtype=np.int8)
     level_indices = np.empty(n_warmup, dtype=np.int8)
+    margins = np.empty(n_warmup, dtype=np.float64)
     level_ids = {level.name: index for index, level in enumerate(LEVELS)}
     for attempt_index in range(n_warmup):
         attempt_id = attempt_index + 1
@@ -432,7 +456,8 @@ def _engine_warmup_panel_summary(
         )
         outcomes[attempt_index] = episode.R
         level_indices[attempt_index] = level_ids[episode.level.name]
-    return player_id, player.as_array(), outcomes, level_indices
+        margins[attempt_index] = completion_margin(episode)
+    return player_id, player.as_array(), outcomes, level_indices, margins
 
 
 def generate_engine_warmup_panel(
@@ -476,6 +501,9 @@ def generate_engine_warmup_panel(
     level_indices = np.asarray(
         [summary[3] for summary in summaries], dtype=np.int8
     )
+    completion_margins = np.asarray(
+        [summary[4] for summary in summaries], dtype=np.float64
+    )
     churn_uniforms = np.asarray(
         [
             [
@@ -517,6 +545,7 @@ def generate_engine_warmup_panel(
         exogenous_seeds=exogenous_seeds,
         assignment_gains=np.asarray(assignment.skill_gains),
         assignment_sigmas=np.asarray(assignment.sigmas),
+        warmup_completion_margins=completion_margins,
     )
 
 
@@ -539,6 +568,15 @@ def materialize_engine_landmark_cohort(
         raise ValueError("panel was generated under a different assignment schedule")
     mastery = np.full(len(panel.player_ids), mastery_config.initial, dtype=np.float64)
     active = np.ones(len(panel.player_ids), dtype=bool)
+    margins = panel.warmup_completion_margins
+    if (
+        any(
+            _churn_for_level(churn_config, level.name).margin_deviation_coefficient
+            for level in LEVELS
+        )
+        and margins.shape != panel.warmup_outcomes.shape
+    ):
+        raise ValueError("panel lacks completion margins required by churn config")
     for attempt_index in range(panel.warmup_outcomes.shape[1]):
         mastery = update_mastery(
             mastery, panel.warmup_outcomes[:, attempt_index], mastery_config
@@ -548,7 +586,13 @@ def materialize_engine_landmark_cohort(
             rows = panel.level_indices[:, attempt_index] == level_index
             if np.any(rows):
                 hazard[rows] = mastery_mismatch_hazard(
-                    mastery[rows], _churn_for_level(churn_config, level.name)
+                    mastery[rows],
+                    _churn_for_level(churn_config, level.name),
+                    completion_margin=(
+                        margins[rows, attempt_index]
+                        if margins.shape == panel.warmup_outcomes.shape
+                        else None
+                    ),
                 )
         churned = panel.churn_uniforms[:, attempt_index] < (
             benchmark.warmup_churn_scale * hazard
@@ -831,6 +875,37 @@ def _engine_goal_total(
     return episode.goals_cleared
 
 
+def _engine_goal_profile(
+    payload: tuple[LevelContext, Difficulty, PlayerSkill, int],
+) -> np.ndarray:
+    """Return cumulative goal progress after each move in a full-budget run."""
+    level, difficulty, player, seed = payload
+    import pyro
+
+    from .scm import PROXY_NAMES, ground_truth_model
+
+    pyro.set_rng_seed(seed)
+    episode = ground_truth_model(
+        level=level,
+        player=player,
+        difficulty=difficulty,
+        E=0.0,
+        evidence=np.zeros(len(PROXY_NAMES), dtype=np.float64),
+        served_goal_count=10_000,
+    )
+    increments = np.asarray(
+        [transition.goal_cleared for transition in episode.transitions],
+        dtype=np.int64,
+    )
+    progress = np.empty(difficulty.move_budget, dtype=np.int64)
+    if len(increments):
+        progress[: len(increments)] = np.cumsum(increments)
+        progress[len(increments) :] = progress[len(increments) - 1]
+    else:
+        progress.fill(0)
+    return progress
+
+
 def engine_outcome_surface(
     risk_set: LandmarkRiskSet,
     *,
@@ -838,12 +913,15 @@ def engine_outcome_surface(
     rollouts_per_player: int = 2,
     workers: int = 1,
     reuse_goal_totals: bool = True,
+    include_completion_margins: bool = False,
 ) -> EngineOutcomeSurface:
     """Run paired target-attempt interventions through the board engine."""
     if rollouts_per_player < 1:
         raise ValueError("rollouts_per_player must be positive")
     if workers < 1:
         raise ValueError("workers must be positive")
+    if include_completion_margins and not reuse_goal_totals:
+        raise ValueError("completion margins require reusable goal profiles")
     from concurrent.futures import ProcessPoolExecutor
 
     from .calibrate import _run_episode_tasks, goal_count_for_E
@@ -899,25 +977,72 @@ def engine_outcome_surface(
                 for replicate in range(rollouts_per_player)
             ]
             if executor is None:
-                totals = [_engine_goal_total(task) for task in tasks]
+                values = [
+                    (_engine_goal_profile(task) if include_completion_margins else _engine_goal_total(task))
+                    for task in tasks
+                ]
             else:
-                totals = list(
+                values = list(
                     executor.map(
-                        _engine_goal_total,
+                        (
+                            _engine_goal_profile
+                            if include_completion_margins
+                            else _engine_goal_total
+                        ),
                         tasks,
                         chunksize=max(1, len(tasks) // 64),
                     )
                 )
-            goal_totals = np.asarray(totals, dtype=np.int64).reshape(
-                len(players), rollouts_per_player
-            )
+            if include_completion_margins:
+                max_steps = max(TIER_MOVE_BUDGETS)
+                profiles = np.zeros(
+                    (len(players), rollouts_per_player, max_steps),
+                    dtype=np.int64,
+                )
+                for task_index, profile in enumerate(values):
+                    player_index, replicate = divmod(
+                        task_index, rollouts_per_player
+                    )
+                    profiles[
+                        player_index, replicate, : len(profile)
+                    ] = profile
+                    profiles[
+                        player_index, replicate, len(profile) :
+                    ] = profile[-1]
+                goal_totals = profiles[:, :, -1]
+            else:
+                goal_totals = np.asarray(values, dtype=np.int64).reshape(
+                    len(players), rollouts_per_player
+                )
             quotas = np.asarray(
                 [goal_count_for_E(level.name, float(e)) for e in grid_array],
                 dtype=np.int64,
             )
+            if np.any(quotas <= 0):
+                raise ValueError("calibrated goal quotas must be positive")
             outcome_array = (
                 goal_totals[None, :, :] >= quotas[:, None, None]
             ).astype(np.int8)
+            if include_completion_margins:
+                completion_margins = np.empty_like(
+                    outcome_array, dtype=np.float64
+                )
+                move_budgets = np.asarray(
+                    [difficulty.move_budget for difficulty in difficulties]
+                )
+                for grid_index, quota in enumerate(quotas):
+                    reached = profiles >= quota
+                    won = reached.any(axis=2)
+                    first_step = reached.argmax(axis=2) + 1
+                    win_margin = (
+                        move_budgets[:, None] - first_step
+                    ) / move_budgets[:, None]
+                    loss_margin = -(
+                        quota - goal_totals
+                    ).clip(min=0) / float(quota)
+                    completion_margins[grid_index] = np.where(
+                        won, win_margin, loss_margin
+                    )
         else:
             tasks = [
                 (
@@ -949,6 +1074,9 @@ def engine_outcome_surface(
             "goal_total_threshold" if reuse_goal_totals else "direct_per_e"
         ),
         goal_totals=goal_totals if reuse_goal_totals else None,
+        completion_margins=(
+            completion_margins if include_completion_margins else None
+        ),
     )
 
 
@@ -966,6 +1094,10 @@ def extend_engine_outcome_surface(
         raise ValueError("surface players do not match risk set")
     if surface.goal_totals is None:
         raise ValueError("surface does not contain reusable goal totals")
+    if surface.completion_margins is not None:
+        raise ValueError(
+            "margin surfaces require stored progress profiles for extension"
+        )
     if workers < 1:
         raise ValueError("workers must be positive")
     current_replicates = surface.goal_totals.shape[1]
@@ -1081,6 +1213,12 @@ def regrid_engine_outcome_surface(
     grid_array = np.asarray(grid, dtype=np.float64)
     if grid_array.ndim != 1 or len(grid_array) == 0:
         raise ValueError("grid must be a non-empty vector")
+    if surface.completion_margins is not None:
+        if np.array_equal(grid_array, surface.grid):
+            return surface
+        raise ValueError(
+            "margin surfaces require stored progress profiles for regridding"
+        )
     quotas = np.asarray(
         [goal_count_for_E(surface.level_name, float(e)) for e in grid_array],
         dtype=np.int64,
@@ -1107,7 +1245,7 @@ def save_engine_outcome_surface(
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output,
-        schema_version=np.asarray([2], dtype=np.int16),
+        schema_version=np.asarray([3], dtype=np.int16),
         level_name=np.asarray(surface.level_name),
         grid=surface.grid,
         player_ids=surface.player_ids,
@@ -1118,6 +1256,11 @@ def save_engine_outcome_surface(
             surface.goal_totals
             if surface.goal_totals is not None
             else np.empty((0, 0), dtype=np.int64)
+        ),
+        completion_margins=(
+            surface.completion_margins
+            if surface.completion_margins is not None
+            else np.empty((0, 0, 0), dtype=np.float64)
         ),
     )
     return output
@@ -1153,7 +1296,7 @@ def save_engine_warmup_panel(
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output,
-        schema_version=np.asarray([1], dtype=np.int16),
+        schema_version=np.asarray([2], dtype=np.int16),
         seed=np.asarray([panel.seed], dtype=np.int64),
         landmark_attempt=np.asarray([panel.landmark_attempt], dtype=np.int16),
         player_ids=panel.player_ids,
@@ -1165,6 +1308,7 @@ def save_engine_warmup_panel(
         exogenous_seeds=panel.exogenous_seeds,
         assignment_gains=panel.assignment_gains,
         assignment_sigmas=panel.assignment_sigmas,
+        warmup_completion_margins=panel.warmup_completion_margins,
     )
     return output
 
@@ -1173,7 +1317,7 @@ def load_engine_warmup_panel(path: str | Path) -> EngineWarmupPanel:
     """Load and validate a reusable all-player engine warm-up panel."""
     with np.load(Path(path), allow_pickle=False) as values:
         version = int(values["schema_version"][0])
-        if version != 1:
+        if version not in {1, 2, 3}:
             raise ValueError(f"unsupported engine warm-up panel schema {version}")
         return EngineWarmupPanel(
             seed=int(values["seed"][0]),
@@ -1187,6 +1331,11 @@ def load_engine_warmup_panel(path: str | Path) -> EngineWarmupPanel:
             exogenous_seeds=values["exogenous_seeds"],
             assignment_gains=values["assignment_gains"],
             assignment_sigmas=values["assignment_sigmas"],
+            warmup_completion_margins=(
+                values["warmup_completion_margins"]
+                if version >= 2
+                else None
+            ),
         )
 
 
@@ -1217,7 +1366,7 @@ def load_engine_outcome_surface(path: str | Path) -> EngineOutcomeSurface:
     """Load and validate a paired engine outcome artifact."""
     with np.load(Path(path), allow_pickle=False) as values:
         version = int(values["schema_version"][0])
-        if version not in {1, 2}:
+        if version not in {1, 2, 3}:
             raise ValueError(f"unsupported engine outcome schema {version}")
         return EngineOutcomeSurface(
             level_name=str(values["level_name"].item()),
@@ -1235,6 +1384,11 @@ def load_engine_outcome_surface(path: str | Path) -> EngineOutcomeSurface:
                 if version >= 2 and values["goal_totals"].size
                 else None
             ),
+            completion_margins=(
+                values["completion_margins"]
+                if version >= 3 and values["completion_margins"].size
+                else None
+            ),
         )
 
 
@@ -1249,7 +1403,9 @@ def _engine_player_hazards(
         mastery_before, surface.outcomes, mastery_config
     )
     return mastery_mismatch_hazard(
-        mastery_after, churn_config
+        mastery_after,
+        churn_config,
+        completion_margin=surface.completion_margins,
     ).mean(axis=2)
 
 

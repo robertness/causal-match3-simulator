@@ -54,7 +54,21 @@ def load_generative_world_model_checkpoint(
     if not isinstance(state_dict, Mapping):
         raise ValueError("checkpoint lacks a model state dictionary")
     model = GenerativeWorldModel(checkpoint_arm, config)
-    model.load_state_dict(state_dict)
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    allowed_missing = {
+        "churn_head.raw_margin_deviation",
+        "churn_head.raw_margin_target",
+    }
+    if set(incompatible.missing_keys) - allowed_missing:
+        raise ValueError(
+            "checkpoint lacks required model parameters: "
+            + ", ".join(sorted(set(incompatible.missing_keys) - allowed_missing))
+        )
+    if incompatible.unexpected_keys:
+        raise ValueError(
+            "checkpoint contains unexpected model parameters: "
+            + ", ".join(sorted(incompatible.unexpected_keys))
+        )
     return model.to(device=device, dtype=torch.float32).eval()
 
 
@@ -179,6 +193,7 @@ def induced_response_curves(
         "schema_version": 1,
         "query": "structural_g_computation",
         "fixed_player_context": True,
+        "completion_margin": "held_at_learned_target",
         "arm": model.arm.value,
         "n_players": batch_size,
         "e_grid": grid.tolist(),
@@ -322,6 +337,11 @@ def imagine_response_curves(
                             mastery_after.reshape(1),
                             torch.tensor(
                                 [level_index], dtype=torch.long, device=device
+                            ),
+                            completion_margin=torch.tensor(
+                                [rollout.completion_margin],
+                                dtype=mastery_after.dtype,
+                                device=device,
                             ),
                         )[0]
                         outcomes.append(outcome)

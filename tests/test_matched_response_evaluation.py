@@ -130,6 +130,21 @@ def test_production_checkpoint_reloads_for_fresh_process_evaluation(tmp_path) ->
             path, expected_arm=ModelArm.ORACLE
         )
 
+    legacy_payload = torch.load(path, weights_only=False)
+    legacy_payload["model_state_dict"] = {
+        name: value
+        for name, value in legacy_payload["model_state_dict"].items()
+        if name
+        not in {
+            "churn_head.raw_margin_deviation",
+            "churn_head.raw_margin_target",
+        }
+    }
+    legacy_path = tmp_path / "causal-legacy.pt"
+    torch.save(legacy_payload, legacy_path)
+    legacy = load_generative_world_model_checkpoint(legacy_path)
+    assert legacy.arm is ModelArm.CAUSAL
+
 
 def test_free_running_curve_holds_context_fixed_across_interventions() -> None:
     model = GenerativeWorldModel(ModelArm.CAUSAL, _config())

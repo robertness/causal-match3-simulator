@@ -202,6 +202,11 @@ def test_engine_warmup_panel_round_trip_and_rescores_survival(tmp_path) -> None:
 
     assert isinstance(panel, EngineWarmupPanel)
     assert panel.warmup_outcomes.shape == (4, 2)
+    assert panel.warmup_completion_margins.shape == (4, 2)
+    assert np.all(
+        (panel.warmup_completion_margins >= -1.0)
+        & (panel.warmup_completion_margins <= 1.0)
+    )
     assert panel.level_indices.shape == (4, 2)
     assert panel.churn_uniforms.shape == (4, 2)
     assert panel.target_tier_indices.shape == (3, 4)
@@ -260,6 +265,51 @@ def test_engine_surface_round_trip_preserves_pairing(tmp_path, tiny_engine) -> N
     np.testing.assert_array_equal(restored.outcomes, surface.outcomes)
     assert restored.outcome_method == surface.outcome_method
     np.testing.assert_array_equal(restored.goal_totals, surface.goal_totals)
+
+
+def test_engine_surface_records_exact_signed_completion_margins(tmp_path) -> None:
+    risk_set = _tiny_risk_set()
+    surface = engine_outcome_surface(
+        risk_set,
+        grid=np.asarray([-0.5, 0.0, 0.5]),
+        rollouts_per_player=1,
+        workers=1,
+        include_completion_margins=True,
+    )
+
+    assert surface.completion_margins.shape == surface.outcomes.shape
+    assert np.all(surface.completion_margins[surface.outcomes == 1] >= 0.0)
+    assert np.all(surface.completion_margins[surface.outcomes == 0] <= 0.0)
+    path = save_engine_outcome_surface(surface, tmp_path / "margins.npz")
+    restored = load_engine_outcome_surface(path)
+    np.testing.assert_array_equal(
+        restored.completion_margins, surface.completion_margins
+    )
+    comparison = compare_engine_curves(
+        risk_set,
+        surface,
+        churn_config=ChurnConfig(
+            intercept=-4.0,
+            deviation_coefficient=1.0,
+            mastery_target=0.35,
+            margin_deviation_coefficient=80.0,
+            margin_target=-0.1,
+        ),
+    )
+    assert np.isfinite(comparison.causal).all()
+    report = engine_level_report(
+        risk_set,
+        surface,
+        load_win_propensity_model(),
+        churn_config=ChurnConfig(
+            intercept=-4.0,
+            deviation_coefficient=1.0,
+            mastery_target=0.35,
+            margin_deviation_coefficient=80.0,
+            margin_target=-0.1,
+        ),
+    )
+    assert report["surrogate_check"]["role"] == "unavailable"
 
 
 def test_landmark_risk_set_round_trip_preserves_causal_state(
@@ -434,6 +484,14 @@ def test_engine_cli_keeps_initial_mastery_and_hazard_target_distinct(
             "0.27",
             "--mastery-target",
             "0.33",
+            "--churn-margin-curvatures",
+            "10",
+            "20",
+            "30",
+            "--churn-margin-targets",
+            "-0.1",
+            "-0.2",
+            "-0.3",
             "--out",
             str(tmp_path),
         ],
@@ -443,3 +501,9 @@ def test_engine_cli_keeps_initial_mastery_and_hazard_target_distinct(
 
     assert captured["mastery_config"].initial == 0.27
     assert captured["churn_config"].mastery_target == 0.33
+    assert captured["churn_config"].margin_deviation_coefficients == (
+        10.0,
+        20.0,
+        30.0,
+    )
+    assert captured["churn_config"].margin_targets == (-0.1, -0.2, -0.3)

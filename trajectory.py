@@ -14,7 +14,7 @@ import numpy as np
 
 from .evidence import evidence_metadata
 from .scm import Episode
-from .retention import AttemptRecord, PlayerTrajectory
+from .retention import AttemptRecord, PlayerTrajectory, completion_margin
 
 
 def _board(array: np.ndarray) -> list[list[int]]:
@@ -49,6 +49,7 @@ def episode_to_dict(episode: Episode) -> dict[str, Any]:
         "evidence_metadata": evidence_metadata(),
         "outcome": {
             "R": int(episode.R),
+            "completion_margin": completion_margin(episode),
             "moves_used": episode.moves_used,
             "goals_cleared": episode.goals_cleared,
             "reshuffles": episode.reshuffles,
@@ -123,6 +124,7 @@ def attempt_record_to_dict(record: AttemptRecord) -> dict[str, Any]:
             "active_before": 1,
             "mastery_before": record.mastery_before,
             "mastery_after": record.mastery_after,
+            "completion_margin": record.completion_margin,
             "oracle_win_probability": record.win_probability,
             "churn_probability": record.churn_probability,
             "churn_after": record.churn_after,
@@ -237,6 +239,7 @@ def attempt_summary_row(record: AttemptRecord) -> dict[str, Any]:
             "active_before": 1,
             "mastery_before": record.mastery_before,
             "mastery_after": record.mastery_after,
+            "completion_margin": record.completion_margin,
             "oracle_win_probability": record.win_probability,
             "churn_probability": record.churn_probability,
             "churn_after": record.churn_after,
@@ -269,6 +272,7 @@ def oracle_attempt_summary_row(record: AttemptRecord) -> dict[str, Any]:
         "attempt_id": record.attempt_id,
         "mastery_before": record.mastery_before,
         "mastery_after": record.mastery_after,
+        "completion_margin": record.completion_margin,
         "oracle_win_probability": record.win_probability,
         "churn_probability": record.churn_probability,
     }

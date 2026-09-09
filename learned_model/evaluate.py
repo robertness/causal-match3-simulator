@@ -47,7 +47,13 @@ def load_continuous_vae_checkpoint(
         PrefixEncoderConfig(**payload["encoder_config"]),
         ActionPolicyConfig(**action_config),
     )
-    model.load_state_dict(payload["state_dict"])
+    incompatible = model.load_state_dict(payload["state_dict"], strict=False)
+    allowed_missing = {
+        "churn_head.raw_margin_deviation",
+        "churn_head.raw_margin_target",
+    }
+    if set(incompatible.missing_keys) - allowed_missing or incompatible.unexpected_keys:
+        raise ValueError("checkpoint parameters do not match the continuous VAE")
     return model.to(device=device, dtype=torch.float32).eval()
 
 

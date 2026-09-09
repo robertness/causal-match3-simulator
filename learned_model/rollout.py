@@ -87,6 +87,15 @@ class LearnedDynamicsRollout:
     def outcome(self) -> int:
         return int(self.states[-1].won)
 
+    @property
+    def completion_margin(self) -> float:
+        initial = self.states[0]
+        terminal = self.states[-1]
+        if terminal.won:
+            return terminal.moves_left / initial.moves_left
+        initial_goals = max(1, initial.goals_left)
+        return -terminal.goals_left / initial_goals
+
 
 def _decoded_board(
     logits: torch.Tensor,

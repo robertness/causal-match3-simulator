@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from match3_simulator.retention import (
     ChurnConfig,
     MasteryConfig,
+    completion_margin,
     mastery_mismatch_hazard,
     sample_C,
     update_mastery,
@@ -66,6 +68,45 @@ def test_mastery_hazard_is_stable_at_extreme_logits() -> None:
 
     assert np.isfinite(hazard).all()
     assert np.all((hazard >= 0.0) & (hazard <= 1.0))
+
+
+@pytest.mark.parametrize(
+    ("outcome", "moves_left", "goals_left", "expected"),
+    [(1, 4, 0, 0.2), (0, 0, 6, -0.25)],
+)
+def test_completion_margin_is_signed_distance_from_failure_boundary(
+    outcome: int,
+    moves_left: int,
+    goals_left: int,
+    expected: float,
+) -> None:
+    episode = SimpleNamespace(
+        R=outcome,
+        difficulty=SimpleNamespace(move_budget=20),
+        served_goal_count=24,
+        states=[SimpleNamespace(moves_left=moves_left, goals_left=goals_left)],
+    )
+
+    assert completion_margin(episode) == pytest.approx(expected)
+
+
+def test_churn_hazard_can_use_current_completion_margin() -> None:
+    config = ChurnConfig(
+        intercept=-4.0,
+        deviation_coefficient=1.0,
+        mastery_target=0.5,
+        margin_deviation_coefficient=80.0,
+        margin_target=-0.1,
+    )
+    hazard = mastery_mismatch_hazard(
+        np.full(3, 0.5),
+        config,
+        completion_margin=np.asarray([-0.3, -0.1, 0.1]),
+    )
+
+    assert hazard[1] < hazard[0]
+    assert hazard[1] < hazard[2]
+    assert hazard[0] == pytest.approx(hazard[2])
 
 
 def test_sample_c_accepts_only_post_attempt_mastery() -> None:

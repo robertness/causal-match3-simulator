@@ -90,6 +90,10 @@ def _calibration_provenance() -> dict[str, object]:
     }
 
 
+def _uses_completion_margin(churn_config: ChurnSchedule) -> bool:
+    return any(churn_config.margin_deviation_coefficients)
+
+
 def _correlation(left: np.ndarray, right: np.ndarray) -> float | None:
     left_array = np.asarray(left, dtype=np.float64)
     right_array = np.asarray(right, dtype=np.float64)
@@ -121,12 +125,19 @@ def engine_level_report(
         churn_config=churn_config,
         mastery_config=mastery_config,
     )
-    surrogate = compare_oracle_curves(
-        risk_set,
-        propensity_model,
-        churn_config=churn_config,
-        mastery_config=mastery_config,
-        benchmark=grid_benchmark,
+    uses_margin = bool(
+        churn_config and churn_config.margin_deviation_coefficient
+    )
+    surrogate = (
+        None
+        if uses_margin
+        else compare_oracle_curves(
+            risk_set,
+            propensity_model,
+            churn_config=churn_config,
+            mastery_config=mastery_config,
+            benchmark=grid_benchmark,
+        )
     )
     engine_report = comparison_report(engine, grid_benchmark)
     bootstrap = (
@@ -163,21 +174,31 @@ def engine_level_report(
             "outcome_method": surface.outcome_method,
             "engine": engine_report,
             "bootstrap": bootstrap,
-            "surrogate_check": {
-                "role": "calibration_diagnostic_only",
-                "causal_curve_mae": float(
-                    np.mean(np.abs(engine.causal - surrogate.causal))
-                ),
-                "observational_curve_mae": float(
-                    np.mean(
-                        np.abs(engine.observational - surrogate.observational)
-                    )
-                ),
-                "causal_optimum": surrogate.causal_optimum,
-                "observational_optimum": surrogate.observational_optimum,
-                "causal": surrogate.causal.tolist(),
-                "observational": surrogate.observational.tolist(),
-            },
+            "surrogate_check": (
+                {
+                    "role": "unavailable",
+                    "reason": (
+                        "win-propensity surrogate has no conditional "
+                        "completion-margin distribution"
+                    ),
+                }
+                if surrogate is None
+                else {
+                    "role": "calibration_diagnostic_only",
+                    "causal_curve_mae": float(
+                        np.mean(np.abs(engine.causal - surrogate.causal))
+                    ),
+                    "observational_curve_mae": float(
+                        np.mean(
+                            np.abs(engine.observational - surrogate.observational)
+                        )
+                    ),
+                    "causal_optimum": surrogate.causal_optimum,
+                    "observational_optimum": surrogate.observational_optimum,
+                    "causal": surrogate.causal.tolist(),
+                    "observational": surrogate.observational.tolist(),
+                }
+            ),
         }
     )
 
@@ -244,6 +265,7 @@ def evaluate_engine_benchmark(
             rollouts_per_player=rollouts_per_player,
             workers=workers,
             reuse_goal_totals=reuse_goal_totals,
+            include_completion_margins=_uses_completion_margin(churn_config),
         )
         surface_path = save_engine_outcome_surface(
             surface, output / f"{risk_set.level_name}-outcomes.npz"
@@ -427,6 +449,7 @@ def evaluate_persisted_engine_risk_sets(
             rollouts_per_player=rollouts_per_player,
             workers=workers,
             reuse_goal_totals=reuse_goal_totals,
+            include_completion_margins=_uses_completion_margin(churn_config),
         )
         surface_path = save_engine_outcome_surface(
             surface, output / f"{risk_set.level_name}-outcomes.npz"
@@ -660,6 +683,10 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
     parser.add_argument("--mastery-update-rate", type=float, default=None)
     parser.add_argument("--churn-intercepts", type=float, nargs=3, default=None)
     parser.add_argument("--churn-curvatures", type=float, nargs=3, default=None)
+    parser.add_argument(
+        "--churn-margin-curvatures", type=float, nargs=3, default=None
+    )
+    parser.add_argument("--churn-margin-targets", type=float, nargs=3, default=None)
     parser.add_argument("--assignment-gains", type=float, nargs=3, default=None)
     parser.add_argument("--assignment-sigmas", type=float, nargs=3, default=None)
     args = parser.parse_args()
@@ -695,6 +722,16 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
             mastery_config.initial
             if args.mastery_target is None
             else args.mastery_target
+        ),
+        margin_deviation_coefficients=(
+            CHURN_SCHEDULE.margin_deviation_coefficients
+            if args.churn_margin_curvatures is None
+            else tuple(args.churn_margin_curvatures)
+        ),
+        margin_targets=(
+            CHURN_SCHEDULE.margin_targets
+            if args.churn_margin_targets is None
+            else tuple(args.churn_margin_targets)
         ),
     )
     assignment = AssignmentSchedule(

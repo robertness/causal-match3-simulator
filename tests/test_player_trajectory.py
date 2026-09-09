@@ -12,6 +12,7 @@ from match3_simulator.retention import (
     ChurnConfig,
     MasteryConfig,
     WinPropensityModel,
+    completion_margin,
     simulate_player_trajectory,
     update_mastery,
 )
@@ -60,6 +61,7 @@ def test_trajectory_reuses_one_skill_and_updates_mastery() -> None:
             assert record.mastery_before == trajectory.attempts[index - 1].mastery_after
         assert 0.0 <= record.mastery_before <= 1.0
         assert 0.0 <= record.mastery_after <= 1.0
+        assert record.completion_margin == completion_margin(record.episode)
 
 
 def test_trajectory_stops_at_first_churn() -> None:
@@ -109,6 +111,7 @@ def test_trajectory_schema_records_causal_and_churn_fields() -> None:
         "active_before",
         "mastery_before",
         "mastery_after",
+        "completion_margin",
         "oracle_win_probability",
         "churn_probability",
         "churn_after",

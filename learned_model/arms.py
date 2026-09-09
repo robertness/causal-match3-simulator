@@ -232,7 +232,11 @@ class GenerativeWorldModel(nn.Module):
             target.outcomes.to(win_logits.dtype) - mastery_before
         )
         churn_probability = target.churn_scale * torch.sigmoid(
-            self.churn_head.logits(mastery_after, target.levels.long())
+            self.churn_head.logits(
+                mastery_after,
+                target.levels.long(),
+                completion_margin=target.completion_margin,
+            )
         )
         churn_losses = F.binary_cross_entropy(
             churn_probability,

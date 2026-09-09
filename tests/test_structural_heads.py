@@ -74,6 +74,22 @@ def test_churn_head_has_level_specific_positive_curvature() -> None:
     assert output[1] > output[2]
 
 
+def test_churn_head_is_u_shaped_in_current_completion_margin() -> None:
+    head = ChurnHead()
+    level = torch.zeros(3, dtype=torch.long)
+    mastery = torch.full((3,), CHURN_SCHEDULE.mastery_target)
+    target = head.margin_target[level].detach()
+    margin = target + torch.tensor([-0.2, 0.0, 0.2])
+    churn = head.probabilities(
+        mastery, level, completion_margin=margin
+    )
+
+    assert torch.all(head.margin_deviation_coefficient > 0)
+    assert churn[1] < churn[0]
+    assert churn[1] < churn[2]
+    torch.testing.assert_close(churn[0], churn[2])
+
+
 def test_evidence_head_returns_one_log_density_per_row() -> None:
     head = EvidenceHead()
     evidence = torch.tensor(

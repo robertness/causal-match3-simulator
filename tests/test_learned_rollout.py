@@ -138,6 +138,13 @@ def test_learned_dynamics_rollout_filters_once_then_uses_priors() -> None:
         right.moves_left == left.moves_left - 1
         for left, right in zip(rollout.states, rollout.states[1:])
     )
+    terminal = rollout.states[-1]
+    expected_margin = (
+        terminal.moves_left / initial.moves_left
+        if terminal.won
+        else -terminal.goals_left / initial.goals_left
+    )
+    assert rollout.completion_margin == expected_margin
 
 
 def test_learned_initial_state_uses_only_task_conditioned_decoder() -> None:

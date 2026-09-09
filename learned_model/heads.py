@@ -252,25 +252,69 @@ class ChurnHead(nn.Module):
                 ]
             )
         )
+        self.raw_margin_deviation = nn.Parameter(
+            torch.tensor(
+                [
+                    _inverse_softplus(max(value, 0.1))
+                    for value in CHURN_SCHEDULE.margin_deviation_coefficients
+                ]
+            )
+        )
+        self.raw_margin_target = nn.Parameter(
+            torch.atanh(
+                torch.tensor(CHURN_SCHEDULE.margin_targets).clamp(-0.999, 0.999)
+            )
+        )
 
     @property
     def deviation_coefficient(self) -> torch.Tensor:
         return F.softplus(self.raw_deviation)
 
+    @property
+    def margin_deviation_coefficient(self) -> torch.Tensor:
+        return F.softplus(self.raw_margin_deviation)
+
+    @property
+    def margin_target(self) -> torch.Tensor:
+        return torch.tanh(self.raw_margin_target)
+
     def logits(
-        self, mastery_after: torch.Tensor, level: torch.Tensor
+        self,
+        mastery_after: torch.Tensor,
+        level: torch.Tensor,
+        *,
+        completion_margin: torch.Tensor | None = None,
     ) -> torch.Tensor:
         level_index = level.long()
-        return self.intercept[level_index] + self.deviation_coefficient[
+        margin = (
+            self.margin_target[level_index]
+            if completion_margin is None
+            else completion_margin.to(mastery_after.dtype)
+        )
+        return (
+            self.intercept[level_index]
+            + self.deviation_coefficient[
             level_index
-        ] * (
-            mastery_after - self.config.mastery_target
-        ).square()
+            ]
+            * (mastery_after - self.config.mastery_target).square()
+            + self.margin_deviation_coefficient[level_index]
+            * (margin - self.margin_target[level_index]).square()
+        )
 
     def probabilities(
-        self, mastery_after: torch.Tensor, level: torch.Tensor
+        self,
+        mastery_after: torch.Tensor,
+        level: torch.Tensor,
+        *,
+        completion_margin: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return torch.sigmoid(self.logits(mastery_after, level))
+        return torch.sigmoid(
+            self.logits(
+                mastery_after,
+                level,
+                completion_margin=completion_margin,
+            )
+        )
 
 
 __all__ = [

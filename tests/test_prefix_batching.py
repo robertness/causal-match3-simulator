@@ -13,7 +13,7 @@ from match3_simulator.learned_model.batching import build_prefix_target_batch
 from match3_simulator.learned_model.data import split_player_trajectories
 from match3_simulator.learned_model.encoder import PrefixEncoderConfig
 from match3_simulator.learned_model.model import ContinuousCausalVAE
-from match3_simulator.retention import WinPropensityModel
+from match3_simulator.retention import WinPropensityModel, completion_margin
 from match3_simulator.scm import TIER_NAMES
 from match3_simulator.simulate import simulate_players
 from match3_simulator.learned_model.train import (
@@ -53,6 +53,7 @@ def test_batch_contains_only_completed_prefix_episodes() -> None:
             target.evidence[player_index].numpy(), second.proxy, rtol=1e-6
         )
         assert target.mastery_before[player_index] == trajectory.attempts[1].mastery_before
+        assert target.completion_margin[player_index] == completion_margin(second)
     assert target.churn_mask.all()
     assert torch.all(target.churn_scale == BENCHMARK_CONFIG.warmup_churn_scale)
 

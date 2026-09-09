@@ -31,6 +31,7 @@ class PredictiveTarget:
     evidence: torch.Tensor
     outcomes: torch.Tensor
     mastery_before: torch.Tensor
+    completion_margin: torch.Tensor
     churn: torch.Tensor
     churn_mask: torch.Tensor
     churn_scale: torch.Tensor
@@ -86,13 +87,19 @@ class ContinuousCausalVAE(nn.Module):
         win_probability: torch.Tensor,
         mastery_before: torch.Tensor,
         level: torch.Tensor,
+        margin_after_win: torch.Tensor | None = None,
+        margin_after_loss: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Integrate the churn head over the two possible realized outcomes."""
+        """Integrate churn over outcomes with optional conditional margins."""
         mastery = mastery_before.to(win_probability.dtype)
         after_win = mastery + self.mastery_update_rate * (1.0 - mastery)
         after_loss = mastery - self.mastery_update_rate * mastery
-        churn_after_win = self.churn_head.probabilities(after_win, level)
-        churn_after_loss = self.churn_head.probabilities(after_loss, level)
+        churn_after_win = self.churn_head.probabilities(
+            after_win, level, completion_margin=margin_after_win
+        )
+        churn_after_loss = self.churn_head.probabilities(
+            after_loss, level, completion_margin=margin_after_loss
+        )
         return (
             win_probability * churn_after_win
             + (1.0 - win_probability) * churn_after_loss
@@ -144,7 +151,11 @@ class ContinuousCausalVAE(nn.Module):
             target.outcomes.to(win_logits.dtype) - mastery_before
         )
         churn_probability = target.churn_scale * torch.sigmoid(
-            self.churn_head.logits(mastery_after, target.levels.long())
+            self.churn_head.logits(
+                mastery_after,
+                target.levels.long(),
+                completion_margin=target.completion_margin,
+            )
         )
         churn_losses = F.binary_cross_entropy(
             churn_probability,

@@ -33,27 +33,35 @@ class MasteryConfig:
 
 @dataclass(frozen=True)
 class ChurnConfig:
-    """Symmetric mastery-mismatch hazard configuration."""
+    """Mastery and current-challenge mismatch hazard configuration."""
 
     intercept: float = -14.0
     deviation_coefficient: float = 512.0
     mastery_target: float = 0.35
+    margin_deviation_coefficient: float = 0.0
+    margin_target: float = 0.0
 
     def __post_init__(self) -> None:
         if self.deviation_coefficient <= 0:
             raise ValueError("deviation_coefficient must be positive")
         if not 0.0 < self.mastery_target < 1.0:
             raise ValueError("mastery_target must lie in (0, 1)")
+        if self.margin_deviation_coefficient < 0:
+            raise ValueError("margin_deviation_coefficient must be non-negative")
+        if not -1.0 <= self.margin_target <= 1.0:
+            raise ValueError("margin_target must lie in [-1, 1]")
 
 
 @dataclass(frozen=True)
 class ChurnSchedule:
-    """Level-specific mismatch sensitivity with one mastery target."""
+    """Level-specific mismatch sensitivity with shared mastery target."""
 
     level_names: tuple[str, ...] = ("orchard", "harbour", "foundry")
     intercepts: tuple[float, ...] = (-14.0, -10.0, -16.0)
     deviation_coefficients: tuple[float, ...] = (512.0, 128.0, 192.0)
     mastery_target: float = 0.35
+    margin_deviation_coefficients: tuple[float, ...] = (0.0, 0.0, 0.0)
+    margin_targets: tuple[float, ...] = (0.0, 0.0, 0.0)
 
     def __post_init__(self) -> None:
         n_levels = len(self.level_names)
@@ -67,6 +75,14 @@ class ChurnSchedule:
             raise ValueError("deviation coefficients must be positive")
         if not 0.0 < self.mastery_target < 1.0:
             raise ValueError("mastery_target must lie in (0, 1)")
+        if len(self.margin_deviation_coefficients) != n_levels:
+            raise ValueError("margin deviation coefficients must align with levels")
+        if any(value < 0 for value in self.margin_deviation_coefficients):
+            raise ValueError("margin deviation coefficients must be non-negative")
+        if len(self.margin_targets) != n_levels:
+            raise ValueError("margin targets must align with levels")
+        if any(not -1.0 <= value <= 1.0 for value in self.margin_targets):
+            raise ValueError("margin targets must lie in [-1, 1]")
 
     def for_level(self, level_name: str) -> ChurnConfig:
         index = self.level_names.index(level_name)
@@ -74,6 +90,8 @@ class ChurnSchedule:
             intercept=self.intercepts[index],
             deviation_coefficient=self.deviation_coefficients[index],
             mastery_target=self.mastery_target,
+            margin_deviation_coefficient=self.margin_deviation_coefficients[index],
+            margin_target=self.margin_targets[index],
         )
 
 
@@ -201,6 +219,7 @@ class AttemptRecord:
     episode: object
     mastery_before: float
     mastery_after: float
+    completion_margin: float
     win_probability: float
     churn_probability: float
     churn_after: int
@@ -240,17 +259,41 @@ def update_mastery(
     return float(updated) if updated.ndim == 0 else updated
 
 
+def completion_margin(episode: object) -> float:
+    """Return signed distance from failure using unused moves or unmet quota."""
+    terminal_state = episode.states[-1]
+    if episode.R:
+        margin = terminal_state.moves_left / episode.difficulty.move_budget
+    else:
+        margin = -terminal_state.goals_left / episode.served_goal_count
+    if not -1.0 <= margin <= 1.0:
+        raise ValueError("completion margin must lie in [-1, 1]")
+    return float(margin)
+
+
 def mastery_mismatch_hazard(
     mastery_after: np.ndarray | float,
     config: ChurnConfig = ChurnConfig(),
+    *,
+    completion_margin: np.ndarray | float | None = None,
 ) -> np.ndarray:
-    """Return churn probability, minimized at the configured mastery target."""
+    """Return churn probability from longitudinal and current challenge."""
     mastery = np.asarray(mastery_after, dtype=np.float64)
     if np.any((mastery < 0.0) | (mastery > 1.0)):
         raise ValueError("mastery_after must lie in [0, 1]")
     logit = config.intercept + config.deviation_coefficient * (
         mastery - config.mastery_target
     ) ** 2
+    if completion_margin is None:
+        if config.margin_deviation_coefficient:
+            raise ValueError("completion_margin is required by churn config")
+    else:
+        margin = np.asarray(completion_margin, dtype=np.float64)
+        if np.any((margin < -1.0) | (margin > 1.0)):
+            raise ValueError("completion_margin must lie in [-1, 1]")
+        logit = logit + config.margin_deviation_coefficient * (
+            margin - config.margin_target
+        ) ** 2
     return _sigmoid(logit)
 
 
@@ -277,6 +320,7 @@ def expected_mastery_churn(
 def sample_C(
     mastery_after: float,
     *,
+    completion_margin: float | None = None,
     active: bool = True,
     hazard_scale: float = 1.0,
     config: ChurnConfig = ChurnConfig(),
@@ -288,7 +332,13 @@ def sample_C(
         raise ValueError("hazard_scale must lie in [0, 1]")
     if not active:
         return int(pyro.deterministic(name, torch.tensor(1)))
-    hazard = hazard_scale * float(mastery_mismatch_hazard(mastery_after, config))
+    hazard = hazard_scale * float(
+        mastery_mismatch_hazard(
+            mastery_after,
+            config,
+            completion_margin=completion_margin,
+        )
+    )
     if value is not None:
         outcome = pyro.deterministic(name, torch.tensor(int(value)))
     else:
@@ -340,6 +390,7 @@ def simulate_player_trajectory(
         )
         mastery_before = mastery
         mastery_after = update_mastery(mastery_before, episode.R, mastery_config)
+        margin = completion_margin(episode)
         current_churn_config = (
             churn_config.for_level(episode.level.name)
             if hasattr(churn_config, "for_level")
@@ -351,10 +402,15 @@ def simulate_player_trajectory(
             else 1.0
         )
         churn_probability = hazard_scale * float(
-            mastery_mismatch_hazard(mastery_after, current_churn_config)
+            mastery_mismatch_hazard(
+                mastery_after,
+                current_churn_config,
+                completion_margin=margin,
+            )
         )
         churn_after = sample_C(
             mastery_after,
+            completion_margin=margin,
             hazard_scale=hazard_scale,
             config=current_churn_config,
             name=f"C/{attempt_id}",
@@ -366,6 +422,7 @@ def simulate_player_trajectory(
                 episode=episode,
                 mastery_before=mastery_before,
                 mastery_after=mastery_after,
+                completion_margin=margin,
                 win_probability=win_probability,
                 churn_probability=churn_probability,
                 churn_after=churn_after,
@@ -382,6 +439,7 @@ __all__ = [
     "CHURN_SCHEDULE",
     "ChurnConfig",
     "ChurnSchedule",
+    "completion_margin",
     "expected_mastery_churn",
     "MasteryConfig",
     "PlayerTrajectory",
