@@ -1,11 +1,20 @@
 """Continuous latent-skill models learned from simulator trajectories."""
 
 from .action_policy import ActionPolicyConfig, ContinuousActionPolicy
+from .arms import (
+    GenerativeModelConfig,
+    GenerativeWorldModel,
+    ModelArm,
+    PlayerContext,
+    build_generative_arms,
+)
 from .batching import build_prefix_target_batch
 from .data import (
     ActionDataset,
+    GameplayTransitionDataset,
     action_dataset_from_episodes,
     action_dataset_from_trajectories,
+    load_gameplay_transition_dataset,
     split_action_dataset_by_episode,
     split_action_dataset_by_player,
     split_player_trajectories,
@@ -30,6 +39,7 @@ from .train import (
     fit_win_head,
     train_action_policy,
     train_continuous_vae,
+    train_gameplay_rssm_step,
 )
 from .tokens import ACTION_SLOTS, action_to_index, index_to_action, legal_mask
 
@@ -50,7 +60,12 @@ __all__ = [
     "FastRSSM",
     "GameplayRSSM",
     "GameplayRSSMConfig",
+    "GameplayTransitionDataset",
+    "GenerativeModelConfig",
+    "GenerativeWorldModel",
+    "ModelArm",
     "NetworkActionPolicy",
+    "PlayerContext",
     "PrefixEncoderConfig",
     "PredictiveTarget",
     "RSSMConfig",
@@ -59,13 +74,16 @@ __all__ = [
     "action_dataset_from_episodes",
     "action_dataset_from_trajectories",
     "build_prefix_target_batch",
+    "build_generative_arms",
     "evaluate_action_policy",
     "fit_win_head",
     "index_to_action",
     "legal_mask",
+    "load_gameplay_transition_dataset",
     "split_action_dataset_by_episode",
     "split_action_dataset_by_player",
     "split_player_trajectories",
     "train_action_policy",
     "train_continuous_vae",
+    "train_gameplay_rssm_step",
 ]

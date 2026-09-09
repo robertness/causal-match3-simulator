@@ -10,6 +10,7 @@ import torch
 
 from .action_policy import ContinuousActionPolicy
 from .data import ActionDataset
+from .generative import GameplayRSSM
 from .model import ContinuousCausalVAE, PredictiveTarget
 
 
@@ -73,6 +74,35 @@ def resolve_device(name: str) -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def train_gameplay_rssm_step(
+    model: GameplayRSSM,
+    batch: dict[str, torch.Tensor],
+    optimizer: torch.optim.Optimizer,
+    *,
+    kl_weight: float = 1.0,
+    gradient_clip: float = 1.0,
+) -> dict[str, float]:
+    """Run one optimizer step for a logged gameplay transition batch."""
+    if gradient_clip <= 0:
+        raise ValueError("gradient_clip must be positive")
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    result = model.objective(
+        **batch,
+        kl_weight=kl_weight,
+        sample_posterior=True,
+    )
+    result["loss"].backward()
+    gradient_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(), gradient_clip
+    )
+    optimizer.step()
+    return {
+        name: float(result[name].detach())
+        for name in ("loss", "board_nll", "counter_mse", "kl")
+    } | {"gradient_norm": float(gradient_norm)}
 
 
 @torch.no_grad()
@@ -418,6 +448,7 @@ __all__ = [
     "action_nll",
     "evaluate_action_policy",
     "resolve_device",
+    "train_gameplay_rssm_step",
     "train_action_policy",
     "evaluate_continuous_vae",
     "fit_win_head",

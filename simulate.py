@@ -3,13 +3,12 @@
 Two artefacts come out, because two different things want to consume them:
 
 ``episodes.csv``
-    One row per attempt, with every node of the DAG that is constant within an
-    episode. This is the table for the causal estimation work -- it carries the
-    treatment, the outcome, the observed context, the latent skill and the
-    proxy coordinates side by side.
+    One row per attempt with deployable treatment, outcome, context, and proxy
+    fields. Simulator-only skill and mastery state are written separately.
 
 ``transitions.npz``
-    Flat ``(S_t, A_t, S_{t+1})`` triples for fitting a world model.
+    Flat ``(S_t, A_t, S_{t+1})`` triples plus logged task context and grouping
+    identifiers for fitting sequence world models.
 """
 
 from __future__ import annotations
@@ -25,7 +24,14 @@ import subprocess
 import numpy as np
 import pyro
 
-from .scm import DDA_GAINS, E_SIGMAS, Episode, ground_truth_model
+from .scm import (
+    DDA_GAINS,
+    E_SIGMAS,
+    LEVELS,
+    TIER_NAMES,
+    Episode,
+    ground_truth_model,
+)
 from .retention import (
     CHURN_SCHEDULE,
     MasteryConfig,
@@ -235,12 +241,22 @@ def write_transitions(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     before, after, actions = [], [], []
-    moves_left, goals_left, goals_left_next, goal_colour = [], [], [], []
+    action_indices = []
+    moves_left, moves_left_next = [], []
+    goals_left, goals_left_next, goal_colour = [], [], []
+    levels, tiers, served_difficulty = [], [], []
     episode_id, step_id = [], []
     transition_player_id, transition_attempt_id = [], []
+    level_ids = {level.name: index for index, level in enumerate(LEVELS)}
+    tier_ids = {tier: index for index, tier in enumerate(TIER_NAMES)}
+
+    from .learned_model.tokens import action_to_index
 
     if (player_ids is None) != (attempt_ids is None):
         raise ValueError("player_ids and attempt_ids must be supplied together")
+    if player_ids is None:
+        player_ids = list(range(len(episodes)))
+        attempt_ids = [1] * len(episodes)
     if player_ids is not None and (
         len(player_ids) != len(episodes) or len(attempt_ids) != len(episodes)
     ):
@@ -254,10 +270,15 @@ def write_transitions(
             before.append(state.board)
             after.append(nxt.board)
             actions.append([action.row, action.col, action.drow, action.dcol])
+            action_indices.append(action_to_index(action))
             moves_left.append(state.moves_left)
+            moves_left_next.append(nxt.moves_left)
             goals_left.append(state.goals_left)
             goals_left_next.append(nxt.goals_left)
             goal_colour.append(state.goal_colour)
+            levels.append(level_ids[episode.level.name])
+            tiers.append(tier_ids[episode.tier])
+            served_difficulty.append(episode.E)
             episode_id.append(index)
             step_id.append(t)
             if player_ids is not None and attempt_ids is not None:
@@ -265,19 +286,24 @@ def write_transitions(
                 transition_attempt_id.append(attempt_ids[index])
 
     arrays = {
+        "schema_version": np.asarray([2], dtype=np.int16),
         "board_before": np.asarray(before, dtype=np.int8),
         "board_after": np.asarray(after, dtype=np.int8),
         "action": np.asarray(actions, dtype=np.int8),
+        "action_index": np.asarray(action_indices, dtype=np.int16),
         "moves_left": np.asarray(moves_left, dtype=np.int16),
+        "moves_left_next": np.asarray(moves_left_next, dtype=np.int16),
         "goals_left": np.asarray(goals_left, dtype=np.int16),
         "goals_left_next": np.asarray(goals_left_next, dtype=np.int16),
         "goal_colour": np.asarray(goal_colour, dtype=np.int8),
+        "level": np.asarray(levels, dtype=np.int8),
+        "tier": np.asarray(tiers, dtype=np.int8),
+        "served_difficulty": np.asarray(served_difficulty, dtype=np.float32),
         "episode_id": np.asarray(episode_id, dtype=np.int32),
         "step_id": np.asarray(step_id, dtype=np.int16),
     }
-    if player_ids is not None:
-        arrays["player_id"] = np.asarray(transition_player_id, dtype=np.int32)
-        arrays["attempt_id"] = np.asarray(transition_attempt_id, dtype=np.int16)
+    arrays["player_id"] = np.asarray(transition_player_id, dtype=np.int32)
+    arrays["attempt_id"] = np.asarray(transition_attempt_id, dtype=np.int16)
     np.savez_compressed(path, **arrays)
     return path
 

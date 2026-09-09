@@ -95,8 +95,10 @@ match3-simulate --mode players -n 100 --max-attempts 30 --out data/players
 This writes deployable `episodes.csv` and `transitions.npz`, a separate
 simulator-only `oracle/attempts.csv`, and a manifest containing configuration,
 row counts, code revision, and artifact hashes. True `K`, true `M`, oracle win
-propensity, and churn probabilities never appear in the deployable attempt
-table.
+propensity, and churn probabilities never appear in either deployable artifact.
+The transition artifact includes level, tier, served difficulty, next-state
+counters, and episode/player identifiers so `load_gameplay_transition_dataset`
+can construct masked `GameplayRSSM` sequence batches directly.
 
 Run a board-engine calibration pilot and render its curves:
 
@@ -119,6 +121,13 @@ The `learned_model` package contains the continuous strict-prefix encoder,
 support-aware structural decoder heads, exact legal-action masking, spatial
 action transformer, and CPU-capable training loops. Its deployable path never
 receives true `K` or oracle win propensity.
+
+Its generative package exposes four explicit wrappers around one fast RSSM:
+pooled, parameter-matched no-`K`, causal strict-prefix context, and oracle-`K`.
+The no-`K`, causal, and oracle wrappers have identical parameter counts. Stable
+player context enters the shared behavior policy, while board and counter
+mechanics remain conditioned only on observed state, action, level, tier, and
+served difficulty.
 
 Run a player-disjoint CPU smoke experiment and its real-engine closed-loop check:
 
