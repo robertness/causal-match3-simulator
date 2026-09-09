@@ -7,21 +7,27 @@ import pytest
 
 from match3_simulator.calibrate import load_win_propensity_model
 from match3_simulator.causal_queries import (
+    EngineWarmupPanel,
     bootstrap_engine_curves,
     compare_engine_curves,
     engine_outcome_surface,
+    generate_engine_warmup_panel,
     generate_engine_landmark_cohort,
     generate_landmark_cohort,
     load_engine_outcome_surface,
+    load_engine_warmup_panel,
     load_landmark_risk_set,
+    materialize_engine_landmark_cohort,
     regrid_engine_outcome_surface,
     save_engine_outcome_surface,
+    save_engine_warmup_panel,
     save_landmark_risk_set,
 )
 from match3_simulator.spec import BENCHMARK_CONFIG
 from match3_simulator.engine_benchmark import (
     engine_level_report,
     evaluate_persisted_engine_risk_sets,
+    generate_engine_risk_set_artifacts,
 )
 from match3_simulator.retention import ChurnConfig
 
@@ -147,6 +153,57 @@ def test_engine_landmark_cohort_uses_realized_warmup_outcomes() -> None:
                 axis=1
             )
         )
+
+
+def test_engine_warmup_panel_round_trip_and_rescores_survival(tmp_path) -> None:
+    benchmark = replace(
+        BENCHMARK_CONFIG,
+        landmark_attempt=3,
+        warmup_churn_scale=1.0,
+    )
+    panel = generate_engine_warmup_panel(
+        load_win_propensity_model(),
+        n_players=4,
+        seed=108,
+        benchmark=benchmark,
+        workers=1,
+    )
+
+    assert isinstance(panel, EngineWarmupPanel)
+    assert panel.warmup_outcomes.shape == (4, 2)
+    assert panel.level_indices.shape == (4, 2)
+    assert panel.churn_uniforms.shape == (4, 2)
+    assert panel.target_tier_indices.shape == (3, 4)
+    assert np.all((panel.churn_uniforms >= 0.0) & (panel.churn_uniforms < 1.0))
+
+    path = save_engine_warmup_panel(panel, tmp_path / "warmup-panel.npz")
+    restored = load_engine_warmup_panel(path)
+    for name in panel.__dict__:
+        np.testing.assert_array_equal(getattr(restored, name), getattr(panel, name))
+
+    low_hazard = ChurnConfig(
+        intercept=-100.0,
+        deviation_coefficient=1.0,
+        mastery_target=0.35,
+    )
+    high_hazard = ChurnConfig(
+        intercept=100.0,
+        deviation_coefficient=1.0,
+        mastery_target=0.35,
+    )
+    all_active = materialize_engine_landmark_cohort(
+        restored,
+        benchmark=benchmark,
+        churn_config=low_hazard,
+    )
+    none_active = materialize_engine_landmark_cohort(
+        restored,
+        benchmark=benchmark,
+        churn_config=high_hazard,
+    )
+
+    assert all_active.n_active_players == 4
+    assert none_active.n_active_players == 0
 
 
 def test_engine_curve_uses_realized_outcomes_and_frozen_mastery(tiny_engine) -> None:
@@ -295,3 +352,25 @@ def test_persisted_risk_sets_skip_warmup_and_generate_target_surfaces(
     for level in ("orchard", "harbour", "foundry"):
         assert (tmp_path / "target" / f"{level}-outcomes.npz").is_file()
         assert report["levels"][level]["outcome_method"] == "goal_total_threshold"
+
+
+def test_warmup_only_artifacts_include_all_player_panel(tmp_path) -> None:
+    benchmark = replace(
+        BENCHMARK_CONFIG,
+        landmark_attempt=2,
+        warmup_churn_scale=0.0,
+    )
+    report = generate_engine_risk_set_artifacts(
+        load_win_propensity_model(),
+        n_players=2,
+        seed=127,
+        output_dir=tmp_path,
+        benchmark=benchmark,
+        workers=1,
+    )
+
+    panel_path = tmp_path / report["warmup_panel"]["path"]
+    panel = load_engine_warmup_panel(panel_path)
+    assert report["warmup_panel"]["players"] == 2
+    assert len(panel.player_ids) == 2
+    assert panel_path.is_file()

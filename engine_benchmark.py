@@ -25,9 +25,12 @@ from .causal_queries import (
     comparison_report,
     engine_outcome_surface,
     generate_engine_landmark_cohort,
+    generate_engine_warmup_panel,
     load_landmark_risk_set,
+    materialize_engine_landmark_cohort,
     save_landmark_risk_set,
     save_engine_outcome_surface,
+    save_engine_warmup_panel,
 )
 from .retention import CHURN_SCHEDULE, ChurnConfig, ChurnSchedule, MasteryConfig
 from .scm import LEVELS
@@ -541,16 +544,24 @@ def generate_engine_risk_set_artifacts(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
-    cohort = generate_engine_landmark_cohort(
+    panel = generate_engine_warmup_panel(
         propensity_model,
         n_players=n_players,
         seed=seed,
         assignment=assignment,
-        churn_config=churn_config,
-        mastery_config=mastery_config,
         benchmark=benchmark,
         workers=workers,
     )
+    panel_path = save_engine_warmup_panel(panel, output / "warmup-panel.npz")
+    cohort = materialize_engine_landmark_cohort(
+        panel,
+        assignment=assignment,
+        churn_config=churn_config,
+        mastery_config=mastery_config,
+        benchmark=benchmark,
+    )
+    if not cohort.n_active_players:
+        raise RuntimeError("no players survived to the landmark attempt")
     levels: dict[str, object] = {}
     for risk_set in cohort.risk_sets:
         path = save_landmark_risk_set(
@@ -584,6 +595,11 @@ def generate_engine_risk_set_artifacts(
             "survival_fraction": cohort.survival_fraction,
             "workers": workers,
             "runtime_seconds": time.perf_counter() - started,
+            "warmup_panel": {
+                "path": panel_path.name,
+                "sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
+                "players": len(panel.player_ids),
+            },
             "benchmark": asdict(benchmark),
             "mastery": asdict(mastery_config),
             "assignment": asdict(assignment),

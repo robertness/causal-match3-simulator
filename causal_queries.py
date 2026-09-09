@@ -211,6 +211,70 @@ class LandmarkCohort:
 
 
 @dataclass(frozen=True)
+class EngineWarmupPanel:
+    """All-player gameplay histories with separate reusable churn randomness."""
+
+    seed: int
+    landmark_attempt: int
+    player_ids: np.ndarray
+    skills: np.ndarray
+    warmup_outcomes: np.ndarray
+    level_indices: np.ndarray
+    churn_uniforms: np.ndarray
+    target_tier_indices: np.ndarray
+    exogenous_seeds: np.ndarray
+    assignment_gains: np.ndarray
+    assignment_sigmas: np.ndarray
+
+    def __post_init__(self) -> None:
+        player_ids = np.asarray(self.player_ids, dtype=np.int64)
+        skills = np.asarray(self.skills, dtype=np.float64)
+        outcomes = np.asarray(self.warmup_outcomes, dtype=np.int8)
+        levels = np.asarray(self.level_indices, dtype=np.int8)
+        uniforms = np.asarray(self.churn_uniforms, dtype=np.float64)
+        tiers = np.asarray(self.target_tier_indices, dtype=np.int8)
+        seeds = np.asarray(self.exogenous_seeds, dtype=np.uint32)
+        gains = np.asarray(self.assignment_gains, dtype=np.float64)
+        sigmas = np.asarray(self.assignment_sigmas, dtype=np.float64)
+        n_players = len(player_ids)
+        n_warmup = self.landmark_attempt - 1
+        n_levels = len(ASSIGNMENT_SCHEDULE.level_names)
+        if self.landmark_attempt < 1:
+            raise ValueError("landmark_attempt must be positive")
+        if player_ids.shape != (n_players,) or len(np.unique(player_ids)) != n_players:
+            raise ValueError("player_ids must be a unique vector")
+        if skills.shape != (n_players, len(SKILL_NAMES)):
+            raise ValueError("skills must have shape (players, skills)")
+        if outcomes.shape != (n_players, n_warmup):
+            raise ValueError("warmup_outcomes must align with players and attempts")
+        if levels.shape != outcomes.shape or uniforms.shape != outcomes.shape:
+            raise ValueError("warm-up levels and uniforms must align with outcomes")
+        if np.any((outcomes != 0) & (outcomes != 1)):
+            raise ValueError("warmup_outcomes must be binary")
+        if np.any((levels < 0) | (levels >= n_levels)):
+            raise ValueError("level_indices contain an unknown level")
+        if np.any((uniforms < 0.0) | (uniforms >= 1.0)):
+            raise ValueError("churn_uniforms must lie in [0, 1)")
+        if tiers.shape != (n_levels, n_players):
+            raise ValueError("target_tier_indices must have shape (levels, players)")
+        if seeds.shape != (n_players,):
+            raise ValueError("exogenous_seeds must align with players")
+        if gains.shape != (n_levels,) or sigmas.shape != (n_levels,):
+            raise ValueError("assignment parameters must align with levels")
+        if np.any(gains < 0.0) or np.any(sigmas <= 0.0):
+            raise ValueError("assignment parameters are outside their support")
+        object.__setattr__(self, "player_ids", player_ids)
+        object.__setattr__(self, "skills", skills)
+        object.__setattr__(self, "warmup_outcomes", outcomes)
+        object.__setattr__(self, "level_indices", levels)
+        object.__setattr__(self, "churn_uniforms", uniforms)
+        object.__setattr__(self, "target_tier_indices", tiers)
+        object.__setattr__(self, "exogenous_seeds", seeds)
+        object.__setattr__(self, "assignment_gains", gains)
+        object.__setattr__(self, "assignment_sigmas", sigmas)
+
+
+@dataclass(frozen=True)
 class OverlapDiagnostic:
     e: float
     effective_sample_size: float
@@ -338,6 +402,196 @@ def _engine_warmup_summary(
     )
 
 
+def _engine_warmup_panel_summary(
+    payload: tuple[int, int, int, AssignmentSchedule],
+) -> tuple[int, np.ndarray, np.ndarray, np.ndarray]:
+    """Generate one complete pre-landmark gameplay history without attrition."""
+    player_id, seed, n_warmup, assignment = payload
+    import pyro
+
+    from .scm import LEVELS, ground_truth_model, sample_K
+
+    skill_seed = int(
+        np.random.SeedSequence([seed, player_id, 0]).generate_state(1)[0]
+    )
+    pyro.set_rng_seed(skill_seed)
+    player = sample_K()
+    outcomes = np.empty(n_warmup, dtype=np.int8)
+    level_indices = np.empty(n_warmup, dtype=np.int8)
+    level_ids = {level.name: index for index, level in enumerate(LEVELS)}
+    for attempt_index in range(n_warmup):
+        attempt_id = attempt_index + 1
+        episode_seed = int(
+            np.random.SeedSequence([seed, player_id, attempt_id]).generate_state(1)[0]
+        )
+        pyro.set_rng_seed(episode_seed)
+        episode = ground_truth_model(
+            player=player,
+            dda_gains=assignment.skill_gains,
+            e_sigmas=assignment.sigmas,
+        )
+        outcomes[attempt_index] = episode.R
+        level_indices[attempt_index] = level_ids[episode.level.name]
+    return player_id, player.as_array(), outcomes, level_indices
+
+
+def generate_engine_warmup_panel(
+    propensity_model: WinPropensityModel,
+    *,
+    n_players: int,
+    seed: int,
+    assignment: AssignmentSchedule = ASSIGNMENT_SCHEDULE,
+    benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
+    workers: int = 1,
+) -> EngineWarmupPanel:
+    """Generate full engine histories once for mastery/churn calibration."""
+    del propensity_model
+    if n_players < 1:
+        raise ValueError("n_players must be positive")
+    if workers < 1:
+        raise ValueError("workers must be positive")
+    from concurrent.futures import ProcessPoolExecutor
+
+    from .scm import LEVELS, TIER_NAMES, TIER_PROBS
+
+    n_warmup = benchmark.landmark_attempt - 1
+    tasks = [
+        (player_id, seed, n_warmup, assignment)
+        for player_id in range(n_players)
+    ]
+    if workers == 1:
+        summaries = [_engine_warmup_panel_summary(task) for task in tasks]
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            summaries = list(
+                executor.map(
+                    _engine_warmup_panel_summary,
+                    tasks,
+                    chunksize=max(1, len(tasks) // (workers * 4)),
+                )
+            )
+    player_ids = np.asarray([summary[0] for summary in summaries], dtype=np.int64)
+    skills = np.asarray([summary[1] for summary in summaries], dtype=np.float64)
+    outcomes = np.asarray([summary[2] for summary in summaries], dtype=np.int8)
+    level_indices = np.asarray(
+        [summary[3] for summary in summaries], dtype=np.int8
+    )
+    churn_uniforms = np.asarray(
+        [
+            [
+                np.random.default_rng(
+                    np.random.SeedSequence([seed, int(player_id), attempt_id, 17])
+                ).random()
+                for attempt_id in range(1, benchmark.landmark_attempt)
+            ]
+            for player_id in player_ids
+        ],
+        dtype=np.float64,
+    ).reshape(n_players, n_warmup)
+    target_tiers = np.empty((len(LEVELS), n_players), dtype=np.int8)
+    for level_index in range(len(LEVELS)):
+        for player_index, player_id in enumerate(player_ids):
+            target_tiers[level_index, player_index] = np.random.default_rng(
+                np.random.SeedSequence(
+                    [seed, int(player_id), benchmark.landmark_attempt, level_index, 19]
+                )
+            ).choice(len(TIER_NAMES), p=TIER_PROBS)
+    exogenous_seeds = np.asarray(
+        [
+            np.random.SeedSequence(
+                [seed, int(player_id), benchmark.landmark_attempt]
+            ).generate_state(1)[0]
+            for player_id in player_ids
+        ],
+        dtype=np.uint32,
+    )
+    return EngineWarmupPanel(
+        seed=seed,
+        landmark_attempt=benchmark.landmark_attempt,
+        player_ids=player_ids,
+        skills=skills,
+        warmup_outcomes=outcomes,
+        level_indices=level_indices,
+        churn_uniforms=churn_uniforms,
+        target_tier_indices=target_tiers,
+        exogenous_seeds=exogenous_seeds,
+        assignment_gains=np.asarray(assignment.skill_gains),
+        assignment_sigmas=np.asarray(assignment.sigmas),
+    )
+
+
+def materialize_engine_landmark_cohort(
+    panel: EngineWarmupPanel,
+    *,
+    assignment: AssignmentSchedule = ASSIGNMENT_SCHEDULE,
+    churn_config: ChurnConfig | ChurnSchedule = CHURN_SCHEDULE,
+    mastery_config: MasteryConfig = MasteryConfig(),
+    benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
+) -> LandmarkCohort:
+    """Apply mastery and absorbing churn to one reusable gameplay panel."""
+    from .scm import LEVELS, TIER_LOGITS
+
+    if panel.landmark_attempt != benchmark.landmark_attempt:
+        raise ValueError("panel and benchmark landmark attempts differ")
+    if not np.allclose(panel.assignment_gains, assignment.skill_gains) or not np.allclose(
+        panel.assignment_sigmas, assignment.sigmas
+    ):
+        raise ValueError("panel was generated under a different assignment schedule")
+    mastery = np.full(len(panel.player_ids), mastery_config.initial, dtype=np.float64)
+    active = np.ones(len(panel.player_ids), dtype=bool)
+    for attempt_index in range(panel.warmup_outcomes.shape[1]):
+        mastery = update_mastery(
+            mastery, panel.warmup_outcomes[:, attempt_index], mastery_config
+        )
+        hazard = np.empty(len(panel.player_ids), dtype=np.float64)
+        for level_index, level in enumerate(LEVELS):
+            rows = panel.level_indices[:, attempt_index] == level_index
+            if np.any(rows):
+                hazard[rows] = mastery_mismatch_hazard(
+                    mastery[rows], _churn_for_level(churn_config, level.name)
+                )
+        churned = panel.churn_uniforms[:, attempt_index] < (
+            benchmark.warmup_churn_scale * hazard
+        )
+        active &= ~churned
+    active_rows = np.flatnonzero(active)
+    active_player_ids = panel.player_ids[active_rows]
+    if not len(active_rows):
+        return LandmarkCohort(
+            n_initial_players=len(panel.player_ids),
+            active_player_ids=active_player_ids,
+            risk_sets=(),
+        )
+    tier_logits = np.asarray(TIER_LOGITS, dtype=np.float64)
+    risk_sets = []
+    for level_index, level in enumerate(LEVELS):
+        level_assignment = assignment.for_level(level.name)
+        tiers = panel.target_tier_indices[level_index, active_rows]
+        skills = panel.skills[active_rows]
+        locations = (
+            tier_logits[tiers]
+            + level_assignment.skill_gain * _effective_skills(skills, level)
+        )
+        risk_sets.append(
+            LandmarkRiskSet(
+                level_name=level.name,
+                skills=skills.copy(),
+                tier_indices=tiers.copy(),
+                mastery_before=mastery[active_rows].copy(),
+                assignment_locations=locations,
+                assignment_sigma=level_assignment.sigma,
+                player_ids=active_player_ids.copy(),
+                exogenous_seeds=panel.exogenous_seeds[active_rows].copy(),
+                warmup_outcomes=panel.warmup_outcomes[active_rows].copy(),
+            )
+        )
+    return LandmarkCohort(
+        n_initial_players=len(panel.player_ids),
+        active_player_ids=active_player_ids,
+        risk_sets=tuple(risk_sets),
+    )
+
+
 def generate_engine_landmark_cohort(
     propensity_model: WinPropensityModel,
     *,
@@ -354,89 +608,24 @@ def generate_engine_landmark_cohort(
         raise ValueError("n_players must be positive")
     if workers < 1:
         raise ValueError("workers must be positive")
-    from concurrent.futures import ProcessPoolExecutor
-
-    from .scm import LEVELS, TIER_LOGITS, TIER_NAMES, TIER_PROBS
-
-    tasks = [
-        (
-            propensity_model,
-            player_id,
-            seed,
-            benchmark,
-            churn_config,
-            mastery_config,
-            assignment,
-        )
-        for player_id in range(n_players)
-    ]
-    if workers == 1:
-        summaries = [_engine_warmup_summary(task) for task in tasks]
-    else:
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            summaries = list(
-                executor.map(
-                    _engine_warmup_summary,
-                    tasks,
-                    chunksize=max(1, len(tasks) // (workers * 4)),
-                )
-            )
-    active_summaries = [summary for summary in summaries if summary[4]]
-    if not active_summaries:
+    panel = generate_engine_warmup_panel(
+        propensity_model,
+        n_players=n_players,
+        seed=seed,
+        assignment=assignment,
+        benchmark=benchmark,
+        workers=workers,
+    )
+    cohort = materialize_engine_landmark_cohort(
+        panel,
+        assignment=assignment,
+        churn_config=churn_config,
+        mastery_config=mastery_config,
+        benchmark=benchmark,
+    )
+    if not cohort.n_active_players:
         raise RuntimeError("no players survived to the landmark attempt")
-    active_player_ids = np.asarray(
-        [summary[0] for summary in active_summaries], dtype=np.int64
-    )
-    active_skills = np.asarray(
-        [summary[1] for summary in active_summaries], dtype=np.float64
-    )
-    active_mastery = np.asarray(
-        [summary[2] for summary in active_summaries], dtype=np.float64
-    )
-    active_warmup_outcomes = np.asarray(
-        [summary[3] for summary in active_summaries], dtype=np.int8
-    )
-    target_rng = np.random.default_rng(
-        np.random.SeedSequence([seed, benchmark.landmark_attempt, 1])
-    )
-    tier_logits = np.asarray(TIER_LOGITS, dtype=np.float64)
-    exogenous_seeds = np.asarray(
-        [
-            np.random.SeedSequence(
-                [seed, int(player_id), benchmark.landmark_attempt]
-            ).generate_state(1)[0]
-            for player_id in active_player_ids
-        ],
-        dtype=np.uint32,
-    )
-    risk_sets = []
-    for level in LEVELS:
-        level_assignment = assignment.for_level(level.name)
-        tiers = target_rng.choice(
-            len(TIER_NAMES), size=len(active_skills), p=TIER_PROBS
-        )
-        locations = (
-            tier_logits[tiers]
-            + level_assignment.skill_gain * _effective_skills(active_skills, level)
-        )
-        risk_sets.append(
-            LandmarkRiskSet(
-                level_name=level.name,
-                skills=active_skills.copy(),
-                tier_indices=tiers,
-                mastery_before=active_mastery.copy(),
-                assignment_locations=locations,
-                assignment_sigma=level_assignment.sigma,
-                player_ids=active_player_ids.copy(),
-                exogenous_seeds=exogenous_seeds.copy(),
-                warmup_outcomes=active_warmup_outcomes.copy(),
-            )
-        )
-    return LandmarkCohort(
-        n_initial_players=n_players,
-        active_player_ids=active_player_ids,
-        risk_sets=tuple(risk_sets),
-    )
+    return cohort
 
 
 def generate_landmark_cohort(
@@ -837,6 +1026,51 @@ def save_landmark_risk_set(
         warmup_outcomes=risk_set.warmup_outcomes,
     )
     return output
+
+
+def save_engine_warmup_panel(
+    panel: EngineWarmupPanel, path: str | Path
+) -> Path:
+    """Persist all-player engine histories for deterministic risk-set rescoring."""
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output,
+        schema_version=np.asarray([1], dtype=np.int16),
+        seed=np.asarray([panel.seed], dtype=np.int64),
+        landmark_attempt=np.asarray([panel.landmark_attempt], dtype=np.int16),
+        player_ids=panel.player_ids,
+        skills=panel.skills,
+        warmup_outcomes=panel.warmup_outcomes,
+        level_indices=panel.level_indices,
+        churn_uniforms=panel.churn_uniforms,
+        target_tier_indices=panel.target_tier_indices,
+        exogenous_seeds=panel.exogenous_seeds,
+        assignment_gains=panel.assignment_gains,
+        assignment_sigmas=panel.assignment_sigmas,
+    )
+    return output
+
+
+def load_engine_warmup_panel(path: str | Path) -> EngineWarmupPanel:
+    """Load and validate a reusable all-player engine warm-up panel."""
+    with np.load(Path(path), allow_pickle=False) as values:
+        version = int(values["schema_version"][0])
+        if version != 1:
+            raise ValueError(f"unsupported engine warm-up panel schema {version}")
+        return EngineWarmupPanel(
+            seed=int(values["seed"][0]),
+            landmark_attempt=int(values["landmark_attempt"][0]),
+            player_ids=values["player_ids"],
+            skills=values["skills"],
+            warmup_outcomes=values["warmup_outcomes"],
+            level_indices=values["level_indices"],
+            churn_uniforms=values["churn_uniforms"],
+            target_tier_indices=values["target_tier_indices"],
+            exogenous_seeds=values["exogenous_seeds"],
+            assignment_gains=values["assignment_gains"],
+            assignment_sigmas=values["assignment_sigmas"],
+        )
 
 
 def load_landmark_risk_set(path: str | Path) -> LandmarkRiskSet:
@@ -1528,6 +1762,7 @@ __all__ = [
     "ContrastInterval",
     "CurveComparison",
     "EngineOutcomeSurface",
+    "EngineWarmupPanel",
     "LandmarkCohort",
     "LandmarkRiskSet",
     "OverlapDiagnostic",
@@ -1541,6 +1776,7 @@ __all__ = [
     "evaluate_validation_suite",
     "engine_outcome_surface",
     "generate_engine_landmark_cohort",
+    "generate_engine_warmup_panel",
     "generate_landmark_cohort",
     "oracle_causal_curve",
     "oracle_observational_curve",
@@ -1550,8 +1786,11 @@ __all__ = [
     "regrid_engine_outcome_surface",
     "load_landmark_risk_set",
     "load_engine_outcome_surface",
+    "load_engine_warmup_panel",
+    "materialize_engine_landmark_cohort",
     "save_landmark_risk_set",
     "save_engine_outcome_surface",
+    "save_engine_warmup_panel",
     "select_grid_optimum",
 ]
 
