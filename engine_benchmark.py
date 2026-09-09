@@ -25,6 +25,7 @@ from .causal_queries import (
     comparison_report,
     engine_outcome_surface,
     generate_engine_landmark_cohort,
+    load_landmark_risk_set,
     save_landmark_risk_set,
     save_engine_outcome_surface,
 )
@@ -319,6 +320,149 @@ def evaluate_engine_benchmark(
     return document
 
 
+def _risk_set_with_mastery_config(
+    risk_set: LandmarkRiskSet,
+    mastery_config: MasteryConfig,
+) -> LandmarkRiskSet:
+    if not risk_set.warmup_outcomes.shape[1]:
+        return risk_set
+    mastery = np.full(
+        len(risk_set.skills), mastery_config.initial, dtype=np.float64
+    )
+    for attempt in range(risk_set.warmup_outcomes.shape[1]):
+        mastery += mastery_config.update_rate * (
+            risk_set.warmup_outcomes[:, attempt] - mastery
+        )
+    return LandmarkRiskSet(
+        level_name=risk_set.level_name,
+        skills=risk_set.skills,
+        tier_indices=risk_set.tier_indices,
+        mastery_before=mastery,
+        assignment_locations=risk_set.assignment_locations,
+        assignment_sigma=risk_set.assignment_sigma,
+        player_ids=risk_set.player_ids,
+        exogenous_seeds=risk_set.exogenous_seeds,
+        warmup_outcomes=risk_set.warmup_outcomes,
+    )
+
+
+def evaluate_persisted_engine_risk_sets(
+    propensity_model,
+    *,
+    risk_set_dir: str | Path,
+    output_dir: str | Path,
+    seed: int,
+    status: str = "pilot",
+    max_engine_players: int | None = None,
+    e_grid: tuple[float, ...] = BENCHMARK_CONFIG.e_grid,
+    rollouts_per_player: int = 1,
+    workers: int = 1,
+    n_bootstrap: int = 0,
+    reuse_goal_totals: bool = True,
+    churn_config: ChurnSchedule = CHURN_SCHEDULE,
+    mastery_config: MasteryConfig = MasteryConfig(),
+    benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
+) -> dict[str, object]:
+    """Generate target interventions from persisted engine landmark records."""
+    if status not in {"pilot", "validation"}:
+        raise ValueError("status must be 'pilot' or 'validation'")
+    if max_engine_players is not None and max_engine_players < 1:
+        raise ValueError("max_engine_players must be positive")
+    source = Path(risk_set_dir)
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    risk_sets = tuple(
+        _risk_set_with_mastery_config(
+            load_landmark_risk_set(source / f"{level.name}-risk-set.npz"),
+            mastery_config,
+        )
+        for level in LEVELS
+    )
+    reference_ids = risk_sets[0].player_ids
+    if any(
+        not np.array_equal(risk_set.player_ids, reference_ids)
+        for risk_set in risk_sets[1:]
+    ):
+        raise ValueError("persisted risk sets must contain the same players")
+    n_engine_players = min(
+        len(reference_ids), max_engine_players or len(reference_ids)
+    )
+    rng = np.random.default_rng(
+        np.random.SeedSequence([seed, benchmark.landmark_attempt, 7])
+    )
+    rows = np.sort(
+        rng.choice(len(reference_ids), size=n_engine_players, replace=False)
+    )
+    levels: dict[str, object] = {}
+    for level_index, full_risk_set in enumerate(risk_sets):
+        risk_set = _subset_risk_set(full_risk_set, rows)
+        risk_path = save_landmark_risk_set(
+            risk_set, output / f"{risk_set.level_name}-risk-set.npz"
+        )
+        surface = engine_outcome_surface(
+            risk_set,
+            grid=e_grid,
+            rollouts_per_player=rollouts_per_player,
+            workers=workers,
+            reuse_goal_totals=reuse_goal_totals,
+        )
+        surface_path = save_engine_outcome_surface(
+            surface, output / f"{risk_set.level_name}-outcomes.npz"
+        )
+        report = engine_level_report(
+            risk_set,
+            surface,
+            propensity_model,
+            benchmark=benchmark,
+            mastery_config=mastery_config,
+            churn_config=churn_config.for_level(risk_set.level_name),
+            n_bootstrap=n_bootstrap,
+            bootstrap_seed=int(
+                np.random.SeedSequence([seed, level_index, 8]).generate_state(1)[0]
+            ),
+        )
+        report["risk_set_artifact"] = {
+            "path": risk_path.name,
+            "sha256": hashlib.sha256(risk_path.read_bytes()).hexdigest(),
+        }
+        report["outcome_artifact"] = {
+            "path": surface_path.name,
+            "sha256": hashlib.sha256(surface_path.read_bytes()).hexdigest(),
+        }
+        levels[risk_set.level_name] = report
+    document = _json_safe(
+        {
+            "schema_version": 1,
+            "status": status,
+            "estimator": "board_engine",
+            "risk_set_source": "persisted_board_engine",
+            "source_directory": str(source),
+            "code_sha": _git_revision(),
+            "seed": seed,
+            "n_landmark_players": len(reference_ids),
+            "n_engine_players": n_engine_players,
+            "e_grid": list(e_grid),
+            "rollouts_per_player": rollouts_per_player,
+            "workers": workers,
+            "n_bootstrap": n_bootstrap,
+            "outcome_method": (
+                "goal_total_threshold" if reuse_goal_totals else "direct_per_e"
+            ),
+            "runtime_seconds": time.perf_counter() - started,
+            "benchmark": asdict(benchmark),
+            "mastery": asdict(mastery_config),
+            "churn": asdict(churn_config),
+            "passed": all(bool(report["passed"]) for report in levels.values()),
+            "levels": levels,
+        }
+    )
+    (output / "report.json").write_text(
+        json.dumps(document, indent=2, allow_nan=False) + "\n"
+    )
+    return document
+
+
 def rescore_engine_benchmark(
     propensity_model,
     *,
@@ -345,25 +489,7 @@ def rescore_engine_benchmark(
         surface = load_engine_outcome_surface(
             input_directory / f"{level.name}-outcomes.npz"
         )
-        if risk_set.warmup_outcomes.shape[1]:
-            mastery = np.full(
-                len(risk_set.skills), mastery_config.initial, dtype=np.float64
-            )
-            for attempt in range(risk_set.warmup_outcomes.shape[1]):
-                mastery += mastery_config.update_rate * (
-                    risk_set.warmup_outcomes[:, attempt] - mastery
-                )
-            risk_set = LandmarkRiskSet(
-                level_name=risk_set.level_name,
-                skills=risk_set.skills,
-                tier_indices=risk_set.tier_indices,
-                mastery_before=mastery,
-                assignment_locations=risk_set.assignment_locations,
-                assignment_sigma=risk_set.assignment_sigma,
-                player_ids=risk_set.player_ids,
-                exogenous_seeds=risk_set.exogenous_seeds,
-                warmup_outcomes=risk_set.warmup_outcomes,
-            )
+        risk_set = _risk_set_with_mastery_config(risk_set, mastery_config)
         report = engine_level_report(
             risk_set,
             surface,
@@ -490,6 +616,7 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
     parser.add_argument("--out", type=Path, default=Path("data/engine-pilot"))
     parser.add_argument("--require-pass", action="store_true")
     parser.add_argument("--warmup-only", action="store_true")
+    parser.add_argument("--risk-set-dir", type=Path, default=None)
     parser.add_argument("--direct-per-e", action="store_true")
     parser.add_argument("--mastery-initial", type=float, default=None)
     parser.add_argument("--mastery-update-rate", type=float, default=None)
@@ -498,6 +625,8 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
     parser.add_argument("--assignment-gains", type=float, nargs=3, default=None)
     parser.add_argument("--assignment-sigmas", type=float, nargs=3, default=None)
     args = parser.parse_args()
+    if args.warmup_only and args.risk_set_dir is not None:
+        parser.error("--warmup-only and --risk-set-dir cannot be combined")
 
     model = load_win_propensity_model(args.propensity)
     mastery_defaults = MasteryConfig()
@@ -553,6 +682,29 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
             f"wrote {args.out / 'risk-set-report.json'}  "
             f"players={report['n_landmark_players']}"
         )
+        return
+    if args.risk_set_dir is not None:
+        report = evaluate_persisted_engine_risk_sets(
+            model,
+            risk_set_dir=args.risk_set_dir,
+            output_dir=args.out,
+            seed=args.seed,
+            status=args.status,
+            max_engine_players=args.engine_players,
+            e_grid=tuple(args.e_grid),
+            rollouts_per_player=args.rollouts_per_player,
+            workers=args.workers,
+            n_bootstrap=args.bootstrap,
+            reuse_goal_totals=not args.direct_per_e,
+            mastery_config=mastery_config,
+            churn_config=churn_config,
+        )
+        print(
+            f"wrote {args.out / 'report.json'}  "
+            f"players={report['n_engine_players']}  passed={report['passed']}"
+        )
+        if args.require_pass and not report["passed"]:
+            raise SystemExit(1)
         return
     report = evaluate_engine_benchmark(
         model,

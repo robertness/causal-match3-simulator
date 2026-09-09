@@ -19,7 +19,10 @@ from match3_simulator.causal_queries import (
     save_landmark_risk_set,
 )
 from match3_simulator.spec import BENCHMARK_CONFIG
-from match3_simulator.engine_benchmark import engine_level_report
+from match3_simulator.engine_benchmark import (
+    engine_level_report,
+    evaluate_persisted_engine_risk_sets,
+)
 from match3_simulator.retention import ChurnConfig
 
 
@@ -256,3 +259,39 @@ def test_engine_level_report_uses_explicit_churn_config(tiny_engine) -> None:
     )
 
     assert first["engine"]["causal"] != second["engine"]["causal"]
+
+
+def test_persisted_risk_sets_skip_warmup_and_generate_target_surfaces(
+    tmp_path,
+) -> None:
+    benchmark = replace(BENCHMARK_CONFIG, landmark_attempt=1)
+    model = load_win_propensity_model()
+    cohort = generate_engine_landmark_cohort(
+        model,
+        n_players=2,
+        seed=113,
+        benchmark=benchmark,
+        workers=1,
+    )
+    risk_dir = tmp_path / "risk"
+    for risk_set in cohort.risk_sets:
+        save_landmark_risk_set(
+            risk_set, risk_dir / f"{risk_set.level_name}-risk-set.npz"
+        )
+
+    report = evaluate_persisted_engine_risk_sets(
+        model,
+        risk_set_dir=risk_dir,
+        output_dir=tmp_path / "target",
+        seed=113,
+        e_grid=(-0.5, 0.0, 0.5),
+        rollouts_per_player=1,
+        workers=1,
+        benchmark=benchmark,
+    )
+
+    assert report["risk_set_source"] == "persisted_board_engine"
+    assert report["n_engine_players"] == 2
+    for level in ("orchard", "harbour", "foundry"):
+        assert (tmp_path / "target" / f"{level}-outcomes.npz").is_file()
+        assert report["levels"][level]["outcome_method"] == "goal_total_threshold"
