@@ -952,6 +952,123 @@ def engine_outcome_surface(
     )
 
 
+def extend_engine_outcome_surface(
+    risk_set: LandmarkRiskSet,
+    surface: EngineOutcomeSurface,
+    *,
+    rollouts_per_player: int,
+    workers: int = 1,
+) -> EngineOutcomeSurface:
+    """Append deterministic goal-total replicates without rerunning existing ones."""
+    if surface.level_name != risk_set.level_name:
+        raise ValueError("surface level does not match risk set")
+    if not np.array_equal(surface.player_ids, risk_set.player_ids):
+        raise ValueError("surface players do not match risk set")
+    if surface.goal_totals is None:
+        raise ValueError("surface does not contain reusable goal totals")
+    if workers < 1:
+        raise ValueError("workers must be positive")
+    current_replicates = surface.goal_totals.shape[1]
+    if rollouts_per_player < current_replicates:
+        raise ValueError("rollouts_per_player cannot remove existing replicates")
+
+    expected_seeds = np.asarray(
+        [
+            [
+                np.random.SeedSequence([int(base_seed), replicate]).generate_state(1)[0]
+                for replicate in range(current_replicates)
+            ]
+            for base_seed in risk_set.exogenous_seeds
+        ],
+        dtype=np.uint32,
+    )
+    if not np.array_equal(surface.rollout_seeds, expected_seeds):
+        raise ValueError("surface replicates are not the deterministic seed prefix")
+    if rollouts_per_player == current_replicates:
+        return surface
+
+    from concurrent.futures import ProcessPoolExecutor
+
+    from .calibrate import goal_count_for_E
+    from .scm import (
+        DEFAULT_GOAL_COLOUR,
+        LEVELS,
+        TIER_LOGITS,
+        TIER_MOVE_BUDGETS,
+    )
+
+    level = next(
+        (candidate for candidate in LEVELS if candidate.name == risk_set.level_name),
+        None,
+    )
+    if level is None:
+        raise ValueError(f"unknown level {risk_set.level_name!r}")
+    added_seeds = np.asarray(
+        [
+            [
+                np.random.SeedSequence([int(base_seed), replicate]).generate_state(1)[0]
+                for replicate in range(current_replicates, rollouts_per_player)
+            ]
+            for base_seed in risk_set.exogenous_seeds
+        ],
+        dtype=np.uint32,
+    )
+    players = [
+        PlayerSkill(tuple(map(float, values))) for values in risk_set.skills
+    ]
+    difficulties = [
+        Difficulty(
+            move_budget=TIER_MOVE_BUDGETS[int(tier)],
+            goal_colour=DEFAULT_GOAL_COLOUR,
+            goal_count=goal_count_for_E(level.name, TIER_LOGITS[int(tier)]),
+            baseline=TIER_LOGITS[int(tier)],
+        )
+        for tier in risk_set.tier_indices
+    ]
+    tasks = [
+        (
+            level,
+            difficulties[player_index],
+            players[player_index],
+            int(added_seeds[player_index, replicate]),
+        )
+        for player_index in range(len(players))
+        for replicate in range(added_seeds.shape[1])
+    ]
+    if workers == 1:
+        added_totals = [_engine_goal_total(task) for task in tasks]
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            added_totals = list(
+                executor.map(
+                    _engine_goal_total,
+                    tasks,
+                    chunksize=max(1, len(tasks) // 64),
+                )
+            )
+    added_array = np.asarray(added_totals, dtype=np.int64).reshape(
+        len(players), added_seeds.shape[1]
+    )
+    rollout_seeds = np.concatenate((surface.rollout_seeds, added_seeds), axis=1)
+    goal_totals = np.concatenate((surface.goal_totals, added_array), axis=1)
+    quotas = np.asarray(
+        [goal_count_for_E(level.name, float(e)) for e in surface.grid],
+        dtype=np.int64,
+    )
+    outcomes = (
+        goal_totals[None, :, :] >= quotas[:, None, None]
+    ).astype(np.int8)
+    return EngineOutcomeSurface(
+        level_name=surface.level_name,
+        grid=surface.grid,
+        player_ids=surface.player_ids,
+        rollout_seeds=rollout_seeds,
+        outcomes=outcomes,
+        outcome_method="goal_total_threshold",
+        goal_totals=goal_totals,
+    )
+
+
 def regrid_engine_outcome_surface(
     surface: EngineOutcomeSurface,
     grid: np.ndarray | tuple[float, ...],
@@ -1775,6 +1892,7 @@ __all__ = [
     "evaluate_landmark_benchmark",
     "evaluate_validation_suite",
     "engine_outcome_surface",
+    "extend_engine_outcome_surface",
     "generate_engine_landmark_cohort",
     "generate_engine_warmup_panel",
     "generate_landmark_cohort",

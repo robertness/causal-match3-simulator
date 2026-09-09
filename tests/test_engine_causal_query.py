@@ -11,6 +11,7 @@ from match3_simulator.causal_queries import (
     bootstrap_engine_curves,
     compare_engine_curves,
     engine_outcome_surface,
+    extend_engine_outcome_surface,
     generate_engine_warmup_panel,
     generate_engine_landmark_cohort,
     generate_landmark_cohort,
@@ -113,6 +114,34 @@ def test_goal_total_reuse_matches_direct_per_e_rollouts() -> None:
         reuse_goal_totals=False,
     )
     np.testing.assert_array_equal(regridded.outcomes, expanded_direct.outcomes)
+
+
+def test_engine_surface_extension_preserves_existing_replicates() -> None:
+    risk_set = _tiny_risk_set()
+    initial = engine_outcome_surface(
+        risk_set,
+        grid=np.asarray([-0.5, 0.0, 0.5]),
+        rollouts_per_player=1,
+        workers=1,
+    )
+    extended = extend_engine_outcome_surface(
+        risk_set,
+        initial,
+        rollouts_per_player=2,
+        workers=1,
+    )
+    direct = engine_outcome_surface(
+        risk_set,
+        grid=initial.grid,
+        rollouts_per_player=2,
+        workers=1,
+    )
+
+    np.testing.assert_array_equal(extended.rollout_seeds[:, :1], initial.rollout_seeds)
+    np.testing.assert_array_equal(extended.goal_totals[:, :1], initial.goal_totals)
+    np.testing.assert_array_equal(extended.rollout_seeds, direct.rollout_seeds)
+    np.testing.assert_array_equal(extended.goal_totals, direct.goal_totals)
+    np.testing.assert_array_equal(extended.outcomes, direct.outcomes)
 
 
 def test_engine_landmark_cohort_uses_realized_warmup_outcomes() -> None:
