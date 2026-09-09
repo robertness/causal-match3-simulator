@@ -11,6 +11,7 @@ from .data import (
     split_player_trajectories,
 )
 from .encoder import CausalPrefixEncoder, PrefixEncoderConfig
+from .generative import GameplayRSSM, GameplayRSSMConfig
 from .heads import (
     AssignmentHead,
     ChurnHead,
@@ -47,6 +48,8 @@ __all__ = [
     "CorrelatedSkillTransform",
     "EvidenceHead",
     "FastRSSM",
+    "GameplayRSSM",
+    "GameplayRSSMConfig",
     "NetworkActionPolicy",
     "PrefixEncoderConfig",
     "PredictiveTarget",
