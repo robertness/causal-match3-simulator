@@ -249,12 +249,12 @@ class EngineWarmupPanel:
         seeds = np.asarray(self.exogenous_seeds, dtype=np.uint32)
         gains = np.asarray(self.assignment_gains, dtype=np.float64)
         sigmas = np.asarray(self.assignment_sigmas, dtype=np.float64)
+        n_players = len(player_ids)
         margins = (
             np.empty((n_players, 0), dtype=np.float64)
             if self.warmup_completion_margins is None
             else np.asarray(self.warmup_completion_margins, dtype=np.float64)
         )
-        n_players = len(player_ids)
         n_warmup = self.landmark_attempt - 1
         n_levels = len(ASSIGNMENT_SCHEDULE.level_names)
         if self.landmark_attempt < 1:

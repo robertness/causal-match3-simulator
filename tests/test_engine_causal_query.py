@@ -217,6 +217,25 @@ def test_engine_warmup_panel_round_trip_and_rescores_survival(tmp_path) -> None:
     for name in panel.__dict__:
         np.testing.assert_array_equal(getattr(restored, name), getattr(panel, name))
 
+    legacy_path = tmp_path / "legacy-warmup-panel.npz"
+    np.savez_compressed(
+        legacy_path,
+        schema_version=np.asarray([1], dtype=np.int16),
+        seed=np.asarray([panel.seed], dtype=np.int64),
+        landmark_attempt=np.asarray([panel.landmark_attempt], dtype=np.int16),
+        player_ids=panel.player_ids,
+        skills=panel.skills,
+        warmup_outcomes=panel.warmup_outcomes,
+        level_indices=panel.level_indices,
+        churn_uniforms=panel.churn_uniforms,
+        target_tier_indices=panel.target_tier_indices,
+        exogenous_seeds=panel.exogenous_seeds,
+        assignment_gains=panel.assignment_gains,
+        assignment_sigmas=panel.assignment_sigmas,
+    )
+    legacy = load_engine_warmup_panel(legacy_path)
+    assert legacy.warmup_completion_margins.shape == (4, 0)
+
     low_hazard = ChurnConfig(
         intercept=-100.0,
         deviation_coefficient=1.0,
