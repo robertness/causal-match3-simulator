@@ -55,6 +55,7 @@ def _subset_risk_set(risk_set: LandmarkRiskSet, rows: np.ndarray) -> LandmarkRis
         assignment_sigma=risk_set.assignment_sigma,
         player_ids=risk_set.player_ids[rows],
         exogenous_seeds=risk_set.exogenous_seeds[rows],
+        warmup_outcomes=risk_set.warmup_outcomes[rows],
     )
 
 

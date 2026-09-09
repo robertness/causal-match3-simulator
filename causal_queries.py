@@ -99,6 +99,7 @@ class LandmarkRiskSet:
     assignment_sigma: float
     player_ids: np.ndarray | None = None
     exogenous_seeds: np.ndarray | None = None
+    warmup_outcomes: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         skills = np.asarray(self.skills)
@@ -135,8 +136,18 @@ class LandmarkRiskSet:
             raise ValueError("player_ids must be unique")
         if seeds.shape != (skills.shape[0],):
             raise ValueError("exogenous_seeds must align with skills")
+        warmup = (
+            np.empty((skills.shape[0], 0), dtype=np.int8)
+            if self.warmup_outcomes is None
+            else np.asarray(self.warmup_outcomes, dtype=np.int8)
+        )
+        if warmup.ndim != 2 or warmup.shape[0] != skills.shape[0]:
+            raise ValueError("warmup_outcomes must have shape (players, attempts)")
+        if np.any((warmup != 0) & (warmup != 1)):
+            raise ValueError("warmup_outcomes must be binary")
         object.__setattr__(self, "player_ids", player_ids)
         object.__setattr__(self, "exogenous_seeds", seeds)
+        object.__setattr__(self, "warmup_outcomes", warmup)
 
 
 @dataclass(frozen=True)
@@ -149,6 +160,7 @@ class EngineOutcomeSurface:
     rollout_seeds: np.ndarray
     outcomes: np.ndarray
     outcome_method: str = "direct_per_e"
+    goal_totals: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         grid = np.asarray(self.grid, dtype=np.float64)
@@ -167,10 +179,18 @@ class EngineOutcomeSurface:
             raise ValueError("outcomes must be binary")
         if self.outcome_method not in {"direct_per_e", "goal_total_threshold"}:
             raise ValueError("unsupported engine outcome method")
+        goal_totals = (
+            None
+            if self.goal_totals is None
+            else np.asarray(self.goal_totals, dtype=np.int64)
+        )
+        if goal_totals is not None and goal_totals.shape != seeds.shape:
+            raise ValueError("goal_totals must have shape (players, replicates)")
         object.__setattr__(self, "grid", grid)
         object.__setattr__(self, "player_ids", player_ids)
         object.__setattr__(self, "rollout_seeds", seeds)
         object.__setattr__(self, "outcomes", outcomes)
+        object.__setattr__(self, "goal_totals", goal_totals)
 
 
 @dataclass(frozen=True)
@@ -257,7 +277,7 @@ def _engine_warmup_summary(
         MasteryConfig,
         AssignmentSchedule,
     ],
-) -> tuple[int, np.ndarray, float, bool]:
+    ) -> tuple[int, np.ndarray, float, np.ndarray, bool]:
     """Run one player's pre-landmark engine history and retain causal state."""
     (
         propensity_model,
@@ -279,7 +299,13 @@ def _engine_warmup_summary(
         )
         pyro.set_rng_seed(skill_seed)
         player = sample_K()
-        return player_id, player.as_array(), mastery_config.initial, True
+        return (
+            player_id,
+            player.as_array(),
+            mastery_config.initial,
+            np.empty(0, dtype=np.int8),
+            True,
+        )
     trajectory = simulate_player_trajectory(
         propensity_model,
         player_id=player_id,
@@ -300,7 +326,16 @@ def _engine_warmup_summary(
         if trajectory.attempts
         else mastery_config.initial
     )
-    return player_id, trajectory.player.as_array(), mastery_before, active
+    warmup_outcomes = np.asarray(
+        [record.episode.R for record in trajectory.attempts], dtype=np.int8
+    )
+    return (
+        player_id,
+        trajectory.player.as_array(),
+        mastery_before,
+        warmup_outcomes,
+        active,
+    )
 
 
 def generate_engine_landmark_cohort(
@@ -346,7 +381,7 @@ def generate_engine_landmark_cohort(
                     chunksize=max(1, len(tasks) // (workers * 4)),
                 )
             )
-    active_summaries = [summary for summary in summaries if summary[3]]
+    active_summaries = [summary for summary in summaries if summary[4]]
     if not active_summaries:
         raise RuntimeError("no players survived to the landmark attempt")
     active_player_ids = np.asarray(
@@ -357,6 +392,9 @@ def generate_engine_landmark_cohort(
     )
     active_mastery = np.asarray(
         [summary[2] for summary in active_summaries], dtype=np.float64
+    )
+    active_warmup_outcomes = np.asarray(
+        [summary[3] for summary in active_summaries], dtype=np.int8
     )
     target_rng = np.random.default_rng(
         np.random.SeedSequence([seed, benchmark.landmark_attempt, 1])
@@ -391,6 +429,7 @@ def generate_engine_landmark_cohort(
                 assignment_sigma=level_assignment.sigma,
                 player_ids=active_player_ids.copy(),
                 exogenous_seeds=exogenous_seeds.copy(),
+                warmup_outcomes=active_warmup_outcomes.copy(),
             )
         )
     return LandmarkCohort(
@@ -441,6 +480,9 @@ def generate_landmark_cohort(
     )
     active = np.ones(n_players, dtype=bool)
     mastery = np.full(n_players, mastery_config.initial, dtype=np.float64)
+    warmup_outcomes = np.empty(
+        (n_players, benchmark.landmark_attempt - 1), dtype=np.int8
+    )
     tier_logits = np.asarray(TIER_LOGITS, dtype=np.float64)
 
     gains = np.asarray(
@@ -455,7 +497,7 @@ def generate_landmark_cohort(
             for level in LEVELS
         ]
     )
-    for _ in range(1, benchmark.landmark_attempt):
+    for warmup_index in range(benchmark.landmark_attempt - 1):
         level_indices = rng.choice(len(LEVELS), size=n_players, p=LEVEL_PROBS)
         tier_indices = rng.choice(len(TIER_NAMES), size=n_players, p=TIER_PROBS)
         assignment_locations = (
@@ -478,6 +520,7 @@ def generate_landmark_cohort(
                     served[mask],
                 )
         outcomes = rng.binomial(1, win_probability)
+        warmup_outcomes[:, warmup_index] = outcomes
         mastery_after = update_mastery(mastery, outcomes, mastery_config)
         if benchmark.warmup_churn_scale > 0.0:
             for level_index, level in enumerate(LEVELS):
@@ -526,6 +569,7 @@ def generate_landmark_cohort(
                 assignment_sigma=level_assignment.sigma,
                 player_ids=active_player_ids.copy(),
                 exogenous_seeds=exogenous_seeds.copy(),
+                warmup_outcomes=warmup_outcomes[active].copy(),
             )
         )
     return LandmarkCohort(
@@ -553,6 +597,7 @@ def randomized_assignment_control(
             assignment_sigma=sigma,
             player_ids=risk_set.player_ids,
             exogenous_seeds=risk_set.exogenous_seeds,
+            warmup_outcomes=risk_set.warmup_outcomes,
         )
         for risk_set in cohort.risk_sets
     )
@@ -714,6 +759,37 @@ def engine_outcome_surface(
         outcome_method=(
             "goal_total_threshold" if reuse_goal_totals else "direct_per_e"
         ),
+        goal_totals=goal_totals if reuse_goal_totals else None,
+    )
+
+
+def regrid_engine_outcome_surface(
+    surface: EngineOutcomeSurface,
+    grid: np.ndarray | tuple[float, ...],
+) -> EngineOutcomeSurface:
+    """Recompute quota outcomes from persisted full-budget goal totals."""
+    if surface.goal_totals is None:
+        raise ValueError("surface does not contain reusable goal totals")
+    from .calibrate import goal_count_for_E
+
+    grid_array = np.asarray(grid, dtype=np.float64)
+    if grid_array.ndim != 1 or len(grid_array) == 0:
+        raise ValueError("grid must be a non-empty vector")
+    quotas = np.asarray(
+        [goal_count_for_E(surface.level_name, float(e)) for e in grid_array],
+        dtype=np.int64,
+    )
+    outcomes = (
+        surface.goal_totals[None, :, :] >= quotas[:, None, None]
+    ).astype(np.int8)
+    return EngineOutcomeSurface(
+        level_name=surface.level_name,
+        grid=grid_array,
+        player_ids=surface.player_ids,
+        rollout_seeds=surface.rollout_seeds,
+        outcomes=outcomes,
+        outcome_method="goal_total_threshold",
+        goal_totals=surface.goal_totals,
     )
 
 
@@ -725,13 +801,18 @@ def save_engine_outcome_surface(
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output,
-        schema_version=np.asarray([1], dtype=np.int16),
+        schema_version=np.asarray([2], dtype=np.int16),
         level_name=np.asarray(surface.level_name),
         grid=surface.grid,
         player_ids=surface.player_ids,
         rollout_seeds=surface.rollout_seeds,
         outcomes=surface.outcomes,
         outcome_method=np.asarray(surface.outcome_method),
+        goal_totals=(
+            surface.goal_totals
+            if surface.goal_totals is not None
+            else np.empty((0, 0), dtype=np.int64)
+        ),
     )
     return output
 
@@ -744,7 +825,7 @@ def save_landmark_risk_set(
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output,
-        schema_version=np.asarray([1], dtype=np.int16),
+        schema_version=np.asarray([2], dtype=np.int16),
         level_name=np.asarray(risk_set.level_name),
         skills=risk_set.skills,
         tier_indices=risk_set.tier_indices,
@@ -753,6 +834,7 @@ def save_landmark_risk_set(
         assignment_sigma=np.asarray([risk_set.assignment_sigma]),
         player_ids=risk_set.player_ids,
         exogenous_seeds=risk_set.exogenous_seeds,
+        warmup_outcomes=risk_set.warmup_outcomes,
     )
     return output
 
@@ -761,7 +843,7 @@ def load_landmark_risk_set(path: str | Path) -> LandmarkRiskSet:
     """Load and validate a frozen landmark risk-set artifact."""
     with np.load(Path(path), allow_pickle=False) as values:
         version = int(values["schema_version"][0])
-        if version != 1:
+        if version not in {1, 2}:
             raise ValueError(f"unsupported landmark risk-set schema {version}")
         return LandmarkRiskSet(
             level_name=str(values["level_name"].item()),
@@ -772,6 +854,11 @@ def load_landmark_risk_set(path: str | Path) -> LandmarkRiskSet:
             assignment_sigma=float(values["assignment_sigma"][0]),
             player_ids=values["player_ids"],
             exogenous_seeds=values["exogenous_seeds"],
+            warmup_outcomes=(
+                values["warmup_outcomes"]
+                if version >= 2
+                else None
+            ),
         )
 
 
@@ -779,7 +866,7 @@ def load_engine_outcome_surface(path: str | Path) -> EngineOutcomeSurface:
     """Load and validate a paired engine outcome artifact."""
     with np.load(Path(path), allow_pickle=False) as values:
         version = int(values["schema_version"][0])
-        if version != 1:
+        if version not in {1, 2}:
             raise ValueError(f"unsupported engine outcome schema {version}")
         return EngineOutcomeSurface(
             level_name=str(values["level_name"].item()),
@@ -791,6 +878,11 @@ def load_engine_outcome_surface(path: str | Path) -> EngineOutcomeSurface:
                 str(values["outcome_method"].item())
                 if "outcome_method" in values.files
                 else "direct_per_e"
+            ),
+            goal_totals=(
+                values["goal_totals"]
+                if version >= 2 and values["goal_totals"].size
+                else None
             ),
         )
 
@@ -1455,6 +1547,7 @@ __all__ = [
     "overlap_diagnostic",
     "passes_initial_gates",
     "randomized_assignment_control",
+    "regrid_engine_outcome_surface",
     "load_landmark_risk_set",
     "load_engine_outcome_surface",
     "save_landmark_risk_set",

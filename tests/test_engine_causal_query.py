@@ -14,6 +14,7 @@ from match3_simulator.causal_queries import (
     generate_landmark_cohort,
     load_engine_outcome_surface,
     load_landmark_risk_set,
+    regrid_engine_outcome_surface,
     save_engine_outcome_surface,
     save_landmark_risk_set,
 )
@@ -89,6 +90,19 @@ def test_goal_total_reuse_matches_direct_per_e_rollouts() -> None:
     np.testing.assert_array_equal(reused.outcomes, direct.outcomes)
     assert reused.outcome_method == "goal_total_threshold"
     assert direct.outcome_method == "direct_per_e"
+    assert reused.goal_totals.shape == (len(risk_set.skills), 2)
+    assert direct.goal_totals is None
+
+    expanded_grid = np.asarray([-1.0, -0.5, 0.0, 0.5, 1.0])
+    regridded = regrid_engine_outcome_surface(reused, expanded_grid)
+    expanded_direct = engine_outcome_surface(
+        risk_set,
+        grid=expanded_grid,
+        rollouts_per_player=2,
+        workers=1,
+        reuse_goal_totals=False,
+    )
+    np.testing.assert_array_equal(regridded.outcomes, expanded_direct.outcomes)
 
 
 def test_engine_landmark_cohort_uses_realized_warmup_outcomes() -> None:
@@ -120,6 +134,10 @@ def test_engine_landmark_cohort_uses_realized_warmup_outcomes() -> None:
         np.testing.assert_array_equal(
             first_risk.mastery_before, second_risk.mastery_before
         )
+        np.testing.assert_array_equal(
+            first_risk.warmup_outcomes, second_risk.warmup_outcomes
+        )
+        assert first_risk.warmup_outcomes.shape == (2, 1)
         assert np.all(
             np.isclose(first_risk.mastery_before[:, None], [0.245, 0.545]).any(
                 axis=1
@@ -149,6 +167,7 @@ def test_engine_surface_round_trip_preserves_pairing(tmp_path, tiny_engine) -> N
     np.testing.assert_array_equal(restored.rollout_seeds, surface.rollout_seeds)
     np.testing.assert_array_equal(restored.outcomes, surface.outcomes)
     assert restored.outcome_method == surface.outcome_method
+    np.testing.assert_array_equal(restored.goal_totals, surface.goal_totals)
 
 
 def test_landmark_risk_set_round_trip_preserves_causal_state(
@@ -164,6 +183,7 @@ def test_landmark_risk_set_round_trip_preserves_causal_state(
         "skills",
         "tier_indices",
         "mastery_before",
+        "warmup_outcomes",
         "assignment_locations",
         "player_ids",
         "exogenous_seeds",
