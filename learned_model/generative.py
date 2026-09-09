@@ -55,6 +55,18 @@ class GameplayRSSM(nn.Module):
             nn.GELU(),
             nn.Linear(config.task_context_size, config.task_context_size),
         )
+        self.initial_board_decoder = nn.Sequential(
+            nn.Linear(config.task_context_size, config.hidden_size),
+            nn.GELU(),
+            nn.Linear(
+                config.hidden_size, N_CELLS * config.n_colours
+            ),
+        )
+        self.initial_counter_decoder = nn.Sequential(
+            nn.Linear(config.task_context_size, config.hidden_size),
+            nn.GELU(),
+            nn.Linear(config.hidden_size, 2),
+        )
         self.rssm = FastRSSM(
             RSSMConfig(
                 n_colours=config.n_colours,
@@ -134,6 +146,17 @@ class GameplayRSSM(nn.Module):
             )
         )
 
+    def initial_state_predictions(
+        self, context: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Parameterize the opening state distribution from observed task data."""
+        if context.ndim != 2 or context.shape[1] != self.config.task_context_size:
+            raise ValueError("context has the wrong shape")
+        board_logits = self.initial_board_decoder(context).view(
+            context.shape[0], N_CELLS, self.config.n_colours
+        )
+        return board_logits, self.initial_counter_decoder(context)
+
     def objective(
         self,
         *,
@@ -171,6 +194,9 @@ class GameplayRSSM(nn.Module):
             boards, goal_colours, moves_left, goals_left
         )
         context = self.encode_task(levels, tiers, served_difficulty)
+        initial_board_logits, initial_counter_mean = (
+            self.initial_state_predictions(context)
+        )
         result = self.rssm.observe(
             observations=observations,
             actions=actions,
@@ -178,13 +204,21 @@ class GameplayRSSM(nn.Module):
             sample_posterior=sample_posterior,
         )
         mask = step_mask.to(result["board_logits"].dtype)
-        denominator = mask.sum().clamp_min(1.0)
+        transition_count = mask.sum().clamp_min(1.0)
+        state_count = transition_count + batch_size
         board_losses = F.cross_entropy(
             result["board_logits"].reshape(-1, self.config.n_colours),
             next_boards.long().reshape(-1),
             reduction="none",
         ).view(batch_size, steps, N_CELLS).mean(dim=-1)
-        board_nll = (board_losses * mask).sum() / denominator
+        initial_board_losses = F.cross_entropy(
+            initial_board_logits.reshape(-1, self.config.n_colours),
+            boards[:, 0].long().reshape(-1),
+            reduction="none",
+        ).view(batch_size, N_CELLS).mean(dim=-1)
+        board_nll = (
+            (board_losses * mask).sum() + initial_board_losses.sum()
+        ) / state_count
         counter_targets = torch.stack(
             (
                 next_moves_left.to(result["counter_mean"].dtype)
@@ -197,8 +231,22 @@ class GameplayRSSM(nn.Module):
         counter_losses = (
             result["counter_mean"] - counter_targets
         ).square().mean(dim=-1)
-        counter_mse = (counter_losses * mask).sum() / denominator
-        kl = (result["kl"] * mask).sum() / denominator
+        initial_counter_targets = torch.stack(
+            (
+                moves_left[:, 0].to(initial_counter_mean.dtype)
+                / self.config.max_moves_left,
+                goals_left[:, 0].to(initial_counter_mean.dtype)
+                / self.config.goals_scale,
+            ),
+            dim=-1,
+        )
+        initial_counter_losses = (
+            initial_counter_mean - initial_counter_targets
+        ).square().mean(dim=-1)
+        counter_mse = (
+            (counter_losses * mask).sum() + initial_counter_losses.sum()
+        ) / state_count
+        kl = (result["kl"] * mask).sum() / transition_count
         loss = board_nll + counter_mse + kl_weight * kl
         return {
             "loss": loss,
@@ -207,6 +255,8 @@ class GameplayRSSM(nn.Module):
             "kl": kl,
             "board_logits": result["board_logits"],
             "counter_mean": result["counter_mean"],
+            "initial_board_logits": initial_board_logits,
+            "initial_counter_mean": initial_counter_mean,
             "hidden": result["hidden"],
             "stochastic": result["stochastic"],
         }

@@ -8,7 +8,7 @@ import torch
 from ..evidence import EVIDENCE_NAMES
 from ..retention import MasteryConfig, PlayerTrajectory, update_mastery
 from ..scm import LEVELS, TIER_NAMES
-from ..spec import BENCHMARK_CONFIG
+from ..spec import BENCHMARK_CONFIG, BenchmarkConfig
 from .data import gameplay_transition_dataset_from_episodes
 from .model import PredictiveTarget
 from .tokens import action_to_index, legal_mask
@@ -20,6 +20,7 @@ def build_prefix_target_batch(
     target_attempt: int,
     device: torch.device = torch.device("cpu"),
     mastery_config: MasteryConfig = MasteryConfig(),
+    benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
 ) -> tuple[dict[str, torch.Tensor], PredictiveTarget]:
     """Encode attempts before ``target_attempt`` and score that attempt only."""
     if target_attempt < 1:
@@ -150,6 +151,14 @@ def build_prefix_target_batch(
         mastery_before=tensor(target_mastery_before, torch.float32),
         churn=tensor(target_churn, torch.float32),
         churn_mask=torch.ones((batch_size,), dtype=torch.bool, device=device),
+        churn_scale=torch.full(
+            (batch_size,),
+            benchmark.warmup_churn_scale
+            if target_attempt < benchmark.landmark_attempt
+            else 1.0,
+            dtype=torch.float32,
+            device=device,
+        ),
         action_player=tensor(target_action_player, torch.long),
         boards=tensor(np.asarray(target_boards).reshape(-1, 64), torch.long),
         goal_colours=tensor(target_goal_colours, torch.long),
@@ -169,6 +178,7 @@ def build_generative_training_batch(
     target_attempt: int,
     device: torch.device = torch.device("cpu"),
     mastery_config: MasteryConfig = MasteryConfig(),
+    benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
 ) -> tuple[
     dict[str, torch.Tensor],
     PredictiveTarget,
@@ -181,6 +191,7 @@ def build_generative_training_batch(
         target_attempt=target_attempt,
         device=device,
         mastery_config=mastery_config,
+        benchmark=benchmark,
     )
     target_records = [
         next(

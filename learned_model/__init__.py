@@ -30,7 +30,12 @@ from .heads import (
     WinHead,
 )
 from .model import ContinuousCausalVAE, PredictiveTarget
-from .rollout import NetworkActionPolicy
+from .rollout import (
+    LearnedDynamicsRollout,
+    NetworkActionPolicy,
+    rollout_learned_dynamics,
+    sample_learned_initial_state,
+)
 from .rssm import FastRSSM, RSSMConfig
 from .train import (
     ActionTrainConfig,
@@ -45,7 +50,17 @@ from .train import (
 )
 from .matched_experiment import (
     MatchedGenerativeSmokeConfig,
+    MatchedGenerativeTrainConfig,
+    run_matched_generative_experiment,
     run_matched_generative_smoke,
+)
+from .matched_evaluate import (
+    evaluate_matched_experiment_directory,
+    evaluate_matched_imagination_curves,
+    evaluate_matched_response_curves,
+    imagine_response_curves,
+    induced_response_curves,
+    load_generative_world_model_checkpoint,
 )
 from .tokens import ACTION_SLOTS, action_to_index, index_to_action, legal_mask
 
@@ -69,8 +84,10 @@ __all__ = [
     "GameplayTransitionDataset",
     "GenerativeModelConfig",
     "GenerativeWorldModel",
+    "LearnedDynamicsRollout",
     "ModelArm",
     "MatchedGenerativeSmokeConfig",
+    "MatchedGenerativeTrainConfig",
     "NetworkActionPolicy",
     "PlayerContext",
     "PrefixEncoderConfig",
@@ -84,12 +101,21 @@ __all__ = [
     "build_generative_training_batch",
     "build_generative_arms",
     "evaluate_action_policy",
+    "evaluate_matched_experiment_directory",
+    "evaluate_matched_imagination_curves",
+    "evaluate_matched_response_curves",
     "fit_win_head",
     "gameplay_transition_dataset_from_episodes",
+    "imagine_response_curves",
     "index_to_action",
+    "induced_response_curves",
     "legal_mask",
     "load_gameplay_transition_dataset",
+    "load_generative_world_model_checkpoint",
+    "run_matched_generative_experiment",
     "run_matched_generative_smoke",
+    "rollout_learned_dynamics",
+    "sample_learned_initial_state",
     "split_action_dataset_by_episode",
     "split_action_dataset_by_player",
     "split_player_trajectories",

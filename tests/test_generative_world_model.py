@@ -74,8 +74,12 @@ def test_gameplay_rssm_objective_is_masked_finite_and_differentiable() -> None:
         "board_logits",
     } <= set(result)
     assert result["board_logits"].shape == (2, 4, 64, 6)
+    assert result["initial_board_logits"].shape == (2, 64, 6)
+    assert result["initial_counter_mean"].shape == (2, 2)
     assert torch.isfinite(result["loss"])
     result["loss"].backward()
+    assert model.initial_board_decoder[-1].weight.grad is not None
+    assert model.initial_counter_decoder[-1].weight.grad is not None
     assert model.observation_projection[0].weight.grad is not None
     assert model.rssm.recurrent.weight_hh.grad is not None
 

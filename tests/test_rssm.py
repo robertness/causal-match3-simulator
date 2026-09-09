@@ -73,6 +73,92 @@ def test_rssm_imagine_is_free_running_and_backpropagates() -> None:
     assert model.board_decoder[-1].weight.grad is not None
 
 
+def test_repeated_imagine_steps_match_deterministic_batched_imagination() -> None:
+    model = _model().eval()
+    actions = torch.randint(0, 128, (2, 4))
+    context = torch.randn(2, 4)
+    expected = model.imagine(
+        actions=actions,
+        context=context,
+        sample_prior=False,
+    )
+    hidden, stochastic = model.initial_state(2, context)
+    steps = []
+    for step_index in range(actions.shape[1]):
+        result = model.imagine_step(
+            hidden=hidden,
+            stochastic=stochastic,
+            action=actions[:, step_index],
+            context=context,
+            sample_prior=False,
+        )
+        hidden = result["hidden"]
+        stochastic = result["stochastic"]
+        steps.append(result)
+
+    for name in expected:
+        actual = torch.stack([step[name] for step in steps], dim=1)
+        torch.testing.assert_close(actual, expected[name])
+
+
+def test_repeated_observe_steps_match_deterministic_filtering() -> None:
+    model = _model().eval()
+    observations = torch.randn(2, 4, 12)
+    actions = torch.randint(0, 128, (2, 4))
+    context = torch.randn(2, 4)
+    expected = model.observe(
+        observations=observations,
+        actions=actions,
+        context=context,
+        sample_posterior=False,
+    )
+    hidden, stochastic = model.initial_state(2, context)
+    steps = []
+    for step_index in range(actions.shape[1]):
+        result = model.observe_step(
+            hidden=hidden,
+            stochastic=stochastic,
+            action=actions[:, step_index],
+            context=context,
+            observation=observations[:, step_index],
+            sample_posterior=False,
+        )
+        hidden = result["hidden"]
+        stochastic = result["stochastic"]
+        steps.append(result)
+
+    for name in expected:
+        actual = torch.stack([step[name] for step in steps], dim=1)
+        torch.testing.assert_close(actual, expected[name])
+
+
+def test_stochastic_imagine_step_uses_explicit_generator() -> None:
+    model = _model().eval()
+    context = torch.randn(2, 4)
+    hidden, stochastic = model.initial_state(2, context)
+    action = torch.tensor([3, 7])
+    first = model.imagine_step(
+        hidden=hidden,
+        stochastic=stochastic,
+        action=action,
+        context=context,
+        sample_prior=True,
+        generator=torch.Generator().manual_seed(4041),
+    )
+    torch.randn(100)
+    second = model.imagine_step(
+        hidden=hidden,
+        stochastic=stochastic,
+        action=action,
+        context=context,
+        sample_prior=True,
+        generator=torch.Generator().manual_seed(4041),
+    )
+
+    torch.testing.assert_close(first["stochastic"], second["stochastic"])
+    torch.testing.assert_close(first["board_logits"], second["board_logits"])
+
+
 def test_rssm_parameter_counts_cover_every_trainable_parameter() -> None:
     model = _model()
     counts = model.parameter_counts()

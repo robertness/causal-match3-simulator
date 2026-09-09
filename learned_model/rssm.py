@@ -71,10 +71,17 @@ class FastRSSM(nn.Module):
         mean: torch.Tensor,
         log_scale: torch.Tensor,
         sample: bool,
+        generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         if not sample:
             return mean
-        return mean + torch.randn_like(mean) * log_scale.exp()
+        noise = torch.randn(
+            mean.shape,
+            dtype=mean.dtype,
+            device=mean.device,
+            generator=generator,
+        )
+        return mean + noise * log_scale.exp()
 
     @staticmethod
     def _kl(
@@ -116,6 +123,130 @@ class FastRSSM(nn.Module):
         stochastic = reference.new_zeros(batch_size, self.config.stochastic_size)
         return hidden, stochastic
 
+    def initial_state(
+        self, batch_size: int, reference: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return zero deterministic and stochastic states for imagination."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        return self._initial_state(batch_size, reference)
+
+    def imagine_step(
+        self,
+        *,
+        hidden: torch.Tensor,
+        stochastic: torch.Tensor,
+        action: torch.Tensor,
+        context: torch.Tensor,
+        sample_prior: bool = True,
+        generator: torch.Generator | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Advance one prior transition so actions can depend on generated state."""
+        batch_size = hidden.shape[0]
+        if hidden.shape != (batch_size, self.config.hidden_size):
+            raise ValueError("hidden has the wrong shape")
+        if stochastic.shape != (batch_size, self.config.stochastic_size):
+            raise ValueError("stochastic has the wrong shape")
+        if action.shape != (batch_size,):
+            raise ValueError("action must have shape (batch,)")
+        if context.shape != (batch_size, self.config.context_size):
+            raise ValueError("context has the wrong shape")
+        return self._prior_step(
+            hidden=hidden,
+            stochastic=stochastic,
+            action=action,
+            context=context,
+            sample_prior=sample_prior,
+            generator=generator,
+        )
+
+    def _prior_step(
+        self,
+        *,
+        hidden: torch.Tensor,
+        stochastic: torch.Tensor,
+        action: torch.Tensor,
+        context: torch.Tensor,
+        sample_prior: bool,
+        generator: torch.Generator | None = None,
+    ) -> dict[str, torch.Tensor]:
+        next_hidden = self.recurrent(
+            torch.cat(
+                (self.action(action.long()), stochastic, context), dim=-1
+            ),
+            hidden,
+        )
+        prior_mean, prior_log_scale = self._distribution_parameters(
+            self.prior(torch.cat((next_hidden, context), dim=-1))
+        )
+        next_stochastic = self._sample(
+            prior_mean, prior_log_scale, sample_prior, generator
+        )
+        board_logits, counter_mean = self._decode(
+            next_hidden, next_stochastic, context
+        )
+        return {
+            "hidden": next_hidden,
+            "prior_mean": prior_mean,
+            "prior_log_scale": prior_log_scale,
+            "stochastic": next_stochastic,
+            "board_logits": board_logits,
+            "counter_mean": counter_mean,
+        }
+
+    def observe_step(
+        self,
+        *,
+        hidden: torch.Tensor,
+        stochastic: torch.Tensor,
+        action: torch.Tensor,
+        context: torch.Tensor,
+        observation: torch.Tensor,
+        sample_posterior: bool = True,
+        generator: torch.Generator | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Advance one transition and condition its latent on an observation."""
+        batch_size = hidden.shape[0]
+        if observation.shape != (batch_size, self.config.observation_size):
+            raise ValueError("observation has the wrong shape")
+        prior = self._prior_step(
+            hidden=hidden,
+            stochastic=stochastic,
+            action=action,
+            context=context,
+            sample_prior=False,
+            generator=generator,
+        )
+        posterior_mean, posterior_log_scale = self._distribution_parameters(
+            self.posterior(
+                torch.cat(
+                    (prior["hidden"], context, observation), dim=-1
+                )
+            )
+        )
+        next_stochastic = self._sample(
+            posterior_mean, posterior_log_scale, sample_posterior, generator
+        )
+        board_logits, counter_mean = self._decode(
+            prior["hidden"], next_stochastic, context
+        )
+        return {
+            "hidden": prior["hidden"],
+            "prior_mean": prior["prior_mean"],
+            "prior_log_scale": prior["prior_log_scale"],
+            "posterior_mean": posterior_mean,
+            "posterior_log_scale": posterior_log_scale,
+            "stochastic": next_stochastic,
+            "board_logits": board_logits,
+            "counter_mean": counter_mean,
+            "kl": self._kl(
+                posterior_mean,
+                posterior_log_scale,
+                prior["prior_mean"],
+                prior["prior_log_scale"],
+            ),
+        }
+
     def observe(
         self,
         *,
@@ -134,7 +265,7 @@ class FastRSSM(nn.Module):
             raise ValueError("actions must align with observations")
         if context.shape != (batch_size, self.config.context_size):
             raise ValueError("context has the wrong shape")
-        hidden, stochastic = self._initial_state(batch_size, observations)
+        hidden, stochastic = self.initial_state(batch_size, observations)
         outputs: dict[str, list[torch.Tensor]] = {
             name: []
             for name in (
@@ -150,44 +281,16 @@ class FastRSSM(nn.Module):
             )
         }
         for step in range(steps):
-            hidden = self.recurrent(
-                torch.cat(
-                    (self.action(actions[:, step]), stochastic, context), dim=-1
-                ),
-                hidden,
+            values = self.observe_step(
+                hidden=hidden,
+                stochastic=stochastic,
+                action=actions[:, step],
+                context=context,
+                observation=observations[:, step],
+                sample_posterior=sample_posterior,
             )
-            prior_mean, prior_log_scale = self._distribution_parameters(
-                self.prior(torch.cat((hidden, context), dim=-1))
-            )
-            posterior_mean, posterior_log_scale = self._distribution_parameters(
-                self.posterior(
-                    torch.cat(
-                        (hidden, context, observations[:, step]), dim=-1
-                    )
-                )
-            )
-            stochastic = self._sample(
-                posterior_mean, posterior_log_scale, sample_posterior
-            )
-            board_logits, counter_mean = self._decode(
-                hidden, stochastic, context
-            )
-            values = {
-                "hidden": hidden,
-                "prior_mean": prior_mean,
-                "prior_log_scale": prior_log_scale,
-                "posterior_mean": posterior_mean,
-                "posterior_log_scale": posterior_log_scale,
-                "stochastic": stochastic,
-                "board_logits": board_logits,
-                "counter_mean": counter_mean,
-                "kl": self._kl(
-                    posterior_mean,
-                    posterior_log_scale,
-                    prior_mean,
-                    prior_log_scale,
-                ),
-            }
+            hidden = values["hidden"]
+            stochastic = values["stochastic"]
             for name, value in values.items():
                 outputs[name].append(value)
         return {
@@ -207,40 +310,33 @@ class FastRSSM(nn.Module):
         batch_size, steps = actions.shape
         if context.shape != (batch_size, self.config.context_size):
             raise ValueError("context has the wrong shape")
-        hidden, stochastic = self._initial_state(batch_size, context)
-        hidden_values = []
-        prior_means = []
-        prior_log_scales = []
-        stochastic_values = []
-        board_values = []
-        counter_values = []
+        hidden, stochastic = self.initial_state(batch_size, context)
+        outputs: dict[str, list[torch.Tensor]] = {
+            name: []
+            for name in (
+                "hidden",
+                "prior_mean",
+                "prior_log_scale",
+                "stochastic",
+                "board_logits",
+                "counter_mean",
+            )
+        }
         for step in range(steps):
-            hidden = self.recurrent(
-                torch.cat(
-                    (self.action(actions[:, step]), stochastic, context), dim=-1
-                ),
-                hidden,
+            result = self.imagine_step(
+                hidden=hidden,
+                stochastic=stochastic,
+                action=actions[:, step],
+                context=context,
+                sample_prior=sample_prior,
             )
-            prior_mean, prior_log_scale = self._distribution_parameters(
-                self.prior(torch.cat((hidden, context), dim=-1))
-            )
-            stochastic = self._sample(prior_mean, prior_log_scale, sample_prior)
-            board_logits, counter_mean = self._decode(
-                hidden, stochastic, context
-            )
-            hidden_values.append(hidden)
-            prior_means.append(prior_mean)
-            prior_log_scales.append(prior_log_scale)
-            stochastic_values.append(stochastic)
-            board_values.append(board_logits)
-            counter_values.append(counter_mean)
+            hidden = result["hidden"]
+            stochastic = result["stochastic"]
+            for name, value in result.items():
+                outputs[name].append(value)
         return {
-            "hidden": torch.stack(hidden_values, dim=1),
-            "prior_mean": torch.stack(prior_means, dim=1),
-            "prior_log_scale": torch.stack(prior_log_scales, dim=1),
-            "stochastic": torch.stack(stochastic_values, dim=1),
-            "board_logits": torch.stack(board_values, dim=1),
-            "counter_mean": torch.stack(counter_values, dim=1),
+            name: torch.stack(values, dim=1)
+            for name, values in outputs.items()
         }
 
     def parameter_counts(self) -> dict[str, int]:

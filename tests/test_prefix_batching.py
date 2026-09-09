@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 import torch
 
 from match3_simulator import LEVELS
+from match3_simulator.causal_queries import BENCHMARK_CONFIG
 from match3_simulator.learned_model.action_policy import ActionPolicyConfig
 from match3_simulator.learned_model.batching import build_prefix_target_batch
 from match3_simulator.learned_model.data import split_player_trajectories
@@ -51,6 +54,23 @@ def test_batch_contains_only_completed_prefix_episodes() -> None:
         )
         assert target.mastery_before[player_index] == trajectory.attempts[1].mastery_before
     assert target.churn_mask.all()
+    assert torch.all(target.churn_scale == BENCHMARK_CONFIG.warmup_churn_scale)
+
+
+def test_first_attempt_uses_explicit_empty_strict_prefix() -> None:
+    prefix, target = build_prefix_target_batch(_trajectories(), target_attempt=1)
+    assert prefix["episode_mask"].shape == (2, 1)
+    assert not prefix["episode_mask"].any()
+    assert not prefix["step_mask"].any()
+    assert torch.all(target.churn_scale == BENCHMARK_CONFIG.warmup_churn_scale)
+
+
+def test_batch_uses_the_simulation_benchmark_churn_scale() -> None:
+    benchmark = replace(BENCHMARK_CONFIG, warmup_churn_scale=0.0)
+    _, target = build_prefix_target_batch(
+        _trajectories(), target_attempt=2, benchmark=benchmark
+    )
+    assert torch.all(target.churn_scale == 0.0)
 
 
 def test_trajectory_split_is_player_disjoint_and_deterministic() -> None:

@@ -44,6 +44,7 @@ def _target():
         mastery_before=torch.tensor([0.55, 0.55]),
         churn=torch.tensor([0.0, 1.0]),
         churn_mask=torch.ones(2, dtype=torch.bool),
+        churn_scale=torch.ones(2),
         action_player=torch.tensor([0, 0, 1, 1]),
         boards=torch.randint(0, 6, (4, 64)),
         goal_colours=torch.tensor([1, 1, 2, 2]),
@@ -145,3 +146,22 @@ def test_masked_pre_landmark_churn_contributes_no_loss() -> None:
     target.churn_mask.zero_()
     result = model.predictive_objective(_prefix(), target)
     assert result["churn_nll"] == 0.0
+
+
+def test_churn_loss_respects_attempt_hazard_scale() -> None:
+    model = _model().eval()
+    target = _target()
+    target.churn.zero_()
+    target.churn_scale.fill_(0.005)
+    result = model.predictive_objective(
+        _prefix(), target, sample_posterior=False
+    )
+    probability = 0.005 * torch.sigmoid(
+        model.churn_head.logits(
+            result["mastery_after"], target.levels.long()
+        )
+    )
+    expected = torch.nn.functional.binary_cross_entropy(
+        probability, target.churn
+    )
+    torch.testing.assert_close(result["churn_nll"], expected)

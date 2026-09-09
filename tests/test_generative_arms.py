@@ -95,6 +95,7 @@ def _target() -> PredictiveTarget:
         mastery_before=torch.tensor([0.4, 0.3]),
         churn=torch.tensor([0.0, 1.0]),
         churn_mask=torch.ones(2, dtype=torch.bool),
+        churn_scale=torch.ones(2),
         action_player=torch.tensor([0, 1, 0]),
         boards=torch.randint(0, 6, (3, 64)),
         goal_colours=torch.tensor([1, 2, 1]),

@@ -129,6 +129,38 @@ player context enters the shared behavior policy, while board and counter
 mechanics remain conditioned only on observed state, action, level, tier, and
 served difficulty.
 
+Run a player-disjoint matched experiment and reload its best checkpoints for
+held-out response curves:
+
+```python
+from match3_simulator.learned_model import (
+  MatchedGenerativeTrainConfig,
+  evaluate_matched_experiment_directory,
+  run_matched_generative_experiment,
+)
+
+run_matched_generative_experiment(
+  MatchedGenerativeTrainConfig(n_players=2400, seed=4201),
+  output_dir="data/matched-seed4201",
+  progress=print,
+)
+evaluate_matched_experiment_directory(
+  "data/matched-seed4201",
+  target_attempt=20,
+  rollouts_per_player=16,
+  seed=4301,
+)
+```
+
+Training uses one deterministic player split and shared batch order for all
+arms, selects a separate best validation checkpoint per arm, and evaluates the
+untouched test split. `response-curves.json` keeps structural head
+g-computation separate from full learned imagination. The latter samples a
+learned task-conditioned opening state, chooses legal actions with the learned
+policy, conditions the first transition on that opening, and then advances only
+through RSSM priors. Player context is inferred once and held fixed across the
+served-difficulty sweep; simulator skill is supplied only to the oracle arm.
+
 Run a player-disjoint CPU smoke experiment and its real-engine closed-loop check:
 
 ```bash

@@ -33,6 +33,7 @@ class PredictiveTarget:
     mastery_before: torch.Tensor
     churn: torch.Tensor
     churn_mask: torch.Tensor
+    churn_scale: torch.Tensor
     action_player: torch.Tensor
     boards: torch.Tensor
     goal_colours: torch.Tensor
@@ -142,10 +143,12 @@ class ContinuousCausalVAE(nn.Module):
         mastery_after = mastery_before + self.mastery_update_rate * (
             target.outcomes.to(win_logits.dtype) - mastery_before
         )
-        churn_logits = self.churn_head.logits(mastery_after, target.levels.long())
-        churn_losses = F.binary_cross_entropy_with_logits(
-            churn_logits,
-            target.churn.to(churn_logits.dtype),
+        churn_probability = target.churn_scale * torch.sigmoid(
+            self.churn_head.logits(mastery_after, target.levels.long())
+        )
+        churn_losses = F.binary_cross_entropy(
+            churn_probability,
+            target.churn.to(churn_probability.dtype),
             reduction="none",
         )
         churn_mask = target.churn_mask.to(churn_losses.dtype)
