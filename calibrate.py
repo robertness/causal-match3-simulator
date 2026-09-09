@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import Executor, ProcessPoolExecutor
 from dataclasses import asdict, dataclass
+import os
 from pathlib import Path
 
 import numpy as np
@@ -536,18 +537,27 @@ def calibrate(
 
 def save(table: dict[str, dict], path: Path = TABLE_PATH) -> None:
     path.write_text(json.dumps(table, indent=2) + "\n")
-    global _CACHE
-    _CACHE = table
+    _CACHE[path.resolve()] = table
 
 
-_CACHE: dict[str, dict] | None = None
+_CACHE: dict[Path, dict[str, dict]] = {}
 
 
-def load(path: Path = TABLE_PATH) -> dict[str, dict]:
-    global _CACHE
-    if _CACHE is None:
-        _CACHE = json.loads(path.read_text()) if path.exists() else {}
-    return _CACHE
+def calibration_table_path(path: str | Path | None = None) -> Path:
+    """Resolve the calibration table selected for this process."""
+    return (
+        Path(os.environ.get("MATCH3_CALIBRATION_PATH", TABLE_PATH))
+        if path is None
+        else Path(path)
+    ).resolve()
+
+
+def load(path: str | Path | None = None) -> dict[str, dict]:
+    selected = calibration_table_path(path)
+    if selected not in _CACHE:
+        document = json.loads(selected.read_text()) if selected.exists() else {}
+        _CACHE[selected] = document.get("table", document)
+    return _CACHE[selected]
 
 
 def goal_count_for_E(level_name: str, E: float, fallback: int = 30) -> int:

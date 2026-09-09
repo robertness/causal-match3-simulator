@@ -79,6 +79,17 @@ python -m match3_simulator.calibrate --validate-goals --n 1000 --workers 6 \
   --out /tmp/goal-calibration-validation.json
 ```
 
+Calibration variants can be selected without replacing the checked-in table:
+
+```bash
+MATCH3_CALIBRATION_PATH=/path/to/calibration.json \
+  python -m match3_simulator.engine_benchmark --warmup-only ...
+```
+
+The selected file may be a direct level table or a manifest containing a
+`table` field. Engine reports record its resolved path and SHA-256, and direct
+benchmark configuration hashes include that provenance.
+
 Fit the engine-derived oracle win-propensity surface:
 
 ```bash

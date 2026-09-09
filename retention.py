@@ -14,7 +14,7 @@ from .spec import BENCHMARK_CONFIG, BenchmarkConfig, SKILL_NAMES, PlayerSkill
 
 def _sigmoid(value: np.ndarray | float) -> np.ndarray:
     array = np.asarray(value, dtype=np.float64)
-    return 1.0 / (1.0 + np.exp(-array))
+    return np.exp(-np.logaddexp(0.0, -array))
 
 
 @dataclass(frozen=True)

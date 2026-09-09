@@ -13,7 +13,11 @@ from typing import Any
 
 import numpy as np
 
-from .calibrate import WIN_PROPENSITY_PATH, load_win_propensity_model
+from .calibrate import (
+    WIN_PROPENSITY_PATH,
+    calibration_table_path,
+    load_win_propensity_model,
+)
 from .causal_queries import (
     ASSIGNMENT_SCHEDULE,
     AssignmentSchedule,
@@ -72,6 +76,18 @@ def _git_revision() -> str | None:
         check=False,
     )
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _calibration_provenance() -> dict[str, object]:
+    path = calibration_table_path()
+    return {
+        "path": str(path),
+        "sha256": (
+            hashlib.sha256(path.read_bytes()).hexdigest()
+            if path.is_file()
+            else None
+        ),
+    }
 
 
 def _correlation(left: np.ndarray, right: np.ndarray) -> float | None:
@@ -275,6 +291,7 @@ def evaluate_engine_benchmark(
         "rollouts_per_player": rollouts_per_player,
         "n_bootstrap": n_bootstrap,
         "reuse_goal_totals": reuse_goal_totals,
+        "calibration_table": _calibration_provenance(),
         "benchmark": asdict(benchmark),
         "mastery": asdict(mastery_config),
         "assignment": asdict(assignment),
@@ -309,6 +326,7 @@ def evaluate_engine_benchmark(
                 "goal_total_threshold" if reuse_goal_totals else "direct_per_e"
             ),
             "runtime_seconds": time.perf_counter() - started,
+            "calibration_table": _calibration_provenance(),
             "benchmark": asdict(benchmark),
             "mastery": asdict(mastery_config),
             "assignment": asdict(assignment),
@@ -453,6 +471,7 @@ def evaluate_persisted_engine_risk_sets(
                 "goal_total_threshold" if reuse_goal_totals else "direct_per_e"
             ),
             "runtime_seconds": time.perf_counter() - started,
+            "calibration_table": _calibration_provenance(),
             "benchmark": asdict(benchmark),
             "mastery": asdict(mastery_config),
             "churn": asdict(churn_config),
@@ -515,6 +534,7 @@ def rescore_engine_benchmark(
             "code_sha": _git_revision(),
             "seed": seed,
             "n_bootstrap": n_bootstrap,
+            "calibration_table": _calibration_provenance(),
             "benchmark": asdict(benchmark),
             "mastery": asdict(mastery_config),
             "churn": asdict(churn_config),
@@ -600,6 +620,7 @@ def generate_engine_risk_set_artifacts(
                 "sha256": hashlib.sha256(panel_path.read_bytes()).hexdigest(),
                 "players": len(panel.player_ids),
             },
+            "calibration_table": _calibration_provenance(),
             "benchmark": asdict(benchmark),
             "mastery": asdict(mastery_config),
             "assignment": asdict(assignment),
@@ -635,6 +656,7 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
     parser.add_argument("--risk-set-dir", type=Path, default=None)
     parser.add_argument("--direct-per-e", action="store_true")
     parser.add_argument("--mastery-initial", type=float, default=None)
+    parser.add_argument("--mastery-target", type=float, default=None)
     parser.add_argument("--mastery-update-rate", type=float, default=None)
     parser.add_argument("--churn-intercepts", type=float, nargs=3, default=None)
     parser.add_argument("--churn-curvatures", type=float, nargs=3, default=None)
@@ -669,7 +691,11 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
             if args.churn_curvatures is None
             else tuple(args.churn_curvatures)
         ),
-        mastery_target=mastery_config.initial,
+        mastery_target=(
+            mastery_config.initial
+            if args.mastery_target is None
+            else args.mastery_target
+        ),
     )
     assignment = AssignmentSchedule(
         skill_gains=(

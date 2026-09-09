@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import sys
 
 import numpy as np
 import pytest
 
+from match3_simulator import engine_benchmark as engine_benchmark_module
 from match3_simulator.calibrate import load_win_propensity_model
 from match3_simulator.causal_queries import (
     EngineWarmupPanel,
@@ -401,5 +403,43 @@ def test_warmup_only_artifacts_include_all_player_panel(tmp_path) -> None:
     panel_path = tmp_path / report["warmup_panel"]["path"]
     panel = load_engine_warmup_panel(panel_path)
     assert report["warmup_panel"]["players"] == 2
+    assert report["calibration_table"]["sha256"]
     assert len(panel.player_ids) == 2
     assert panel_path.is_file()
+
+
+def test_engine_cli_keeps_initial_mastery_and_hazard_target_distinct(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+
+    def fake_generate(*args, **kwargs):
+        captured.update(kwargs)
+        return {"n_landmark_players": 1}
+
+    monkeypatch.setattr(
+        engine_benchmark_module,
+        "generate_engine_risk_set_artifacts",
+        fake_generate,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "engine-benchmark",
+            "--warmup-only",
+            "--players",
+            "1",
+            "--mastery-initial",
+            "0.27",
+            "--mastery-target",
+            "0.33",
+            "--out",
+            str(tmp_path),
+        ],
+    )
+
+    engine_benchmark_module.main()
+
+    assert captured["mastery_config"].initial == 0.27
+    assert captured["churn_config"].mastery_target == 0.33

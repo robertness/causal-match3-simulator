@@ -54,6 +54,20 @@ def test_mastery_hazard_is_symmetric_around_target() -> None:
     assert hazard[0] == pytest.approx(hazard[2])
 
 
+def test_mastery_hazard_is_stable_at_extreme_logits() -> None:
+    hazard = mastery_mismatch_hazard(
+        np.asarray([0.0, 1.0]),
+        ChurnConfig(
+            intercept=-1e9,
+            deviation_coefficient=1e10,
+            mastery_target=0.5,
+        ),
+    )
+
+    assert np.isfinite(hazard).all()
+    assert np.all((hazard >= 0.0) & (hazard <= 1.0))
+
+
 def test_sample_c_accepts_only_post_attempt_mastery() -> None:
     parameters = inspect.signature(sample_C).parameters
 
