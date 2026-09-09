@@ -28,7 +28,7 @@ from .causal_queries import (
     save_landmark_risk_set,
     save_engine_outcome_surface,
 )
-from .retention import CHURN_SCHEDULE, ChurnSchedule, MasteryConfig
+from .retention import CHURN_SCHEDULE, ChurnConfig, ChurnSchedule, MasteryConfig
 from .scm import LEVELS
 from .spec import BENCHMARK_CONFIG, BenchmarkConfig
 
@@ -89,6 +89,7 @@ def engine_level_report(
     *,
     benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
     mastery_config: MasteryConfig = MasteryConfig(),
+    churn_config: ChurnConfig | None = None,
     n_bootstrap: int = 0,
     bootstrap_seed: int = 0,
 ) -> dict[str, object]:
@@ -97,11 +98,13 @@ def engine_level_report(
     engine = compare_engine_curves(
         risk_set,
         surface,
+        churn_config=churn_config,
         mastery_config=mastery_config,
     )
     surrogate = compare_oracle_curves(
         risk_set,
         propensity_model,
+        churn_config=churn_config,
         mastery_config=mastery_config,
         benchmark=grid_benchmark,
     )
@@ -110,6 +113,7 @@ def engine_level_report(
         bootstrap_engine_curves(
             risk_set,
             surface,
+            churn_config=churn_config,
             mastery_config=mastery_config,
             n_bootstrap=n_bootstrap,
             seed=bootstrap_seed,
@@ -230,6 +234,7 @@ def evaluate_engine_benchmark(
             propensity_model,
             benchmark=benchmark,
             mastery_config=mastery_config,
+            churn_config=churn_config.for_level(risk_set.level_name),
             n_bootstrap=n_bootstrap,
             bootstrap_seed=int(
                 np.random.SeedSequence([seed, level_index, 3]).generate_state(1)[0]
@@ -311,6 +316,86 @@ def evaluate_engine_benchmark(
     report_path.write_text(
         json.dumps(document, indent=2, allow_nan=False) + "\n"
     )
+    return document
+
+
+def rescore_engine_benchmark(
+    propensity_model,
+    *,
+    input_dir: str | Path,
+    output_path: str | Path,
+    mastery_config: MasteryConfig,
+    churn_config: ChurnSchedule,
+    benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
+    n_bootstrap: int = 0,
+    seed: int = 0,
+) -> dict[str, object]:
+    """Rescore persisted engine sufficient statistics without gameplay runs."""
+    from .causal_queries import (
+        load_engine_outcome_surface,
+        load_landmark_risk_set,
+    )
+
+    input_directory = Path(input_dir)
+    levels: dict[str, object] = {}
+    for level_index, level in enumerate(LEVELS):
+        risk_set = load_landmark_risk_set(
+            input_directory / f"{level.name}-risk-set.npz"
+        )
+        surface = load_engine_outcome_surface(
+            input_directory / f"{level.name}-outcomes.npz"
+        )
+        if risk_set.warmup_outcomes.shape[1]:
+            mastery = np.full(
+                len(risk_set.skills), mastery_config.initial, dtype=np.float64
+            )
+            for attempt in range(risk_set.warmup_outcomes.shape[1]):
+                mastery += mastery_config.update_rate * (
+                    risk_set.warmup_outcomes[:, attempt] - mastery
+                )
+            risk_set = LandmarkRiskSet(
+                level_name=risk_set.level_name,
+                skills=risk_set.skills,
+                tier_indices=risk_set.tier_indices,
+                mastery_before=mastery,
+                assignment_locations=risk_set.assignment_locations,
+                assignment_sigma=risk_set.assignment_sigma,
+                player_ids=risk_set.player_ids,
+                exogenous_seeds=risk_set.exogenous_seeds,
+                warmup_outcomes=risk_set.warmup_outcomes,
+            )
+        report = engine_level_report(
+            risk_set,
+            surface,
+            propensity_model,
+            benchmark=benchmark,
+            mastery_config=mastery_config,
+            churn_config=churn_config.for_level(level.name),
+            n_bootstrap=n_bootstrap,
+            bootstrap_seed=int(
+                np.random.SeedSequence([seed, level_index, 5]).generate_state(1)[0]
+            ),
+        )
+        levels[level.name] = report
+    document = _json_safe(
+        {
+            "schema_version": 1,
+            "status": "rescored",
+            "estimator": "board_engine",
+            "source_directory": str(input_directory),
+            "code_sha": _git_revision(),
+            "seed": seed,
+            "n_bootstrap": n_bootstrap,
+            "benchmark": asdict(benchmark),
+            "mastery": asdict(mastery_config),
+            "churn": asdict(churn_config),
+            "passed": all(bool(report["passed"]) for report in levels.values()),
+            "levels": levels,
+        }
+    )
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(document, indent=2, allow_nan=False) + "\n")
     return document
 
 

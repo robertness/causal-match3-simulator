@@ -20,6 +20,7 @@ from match3_simulator.causal_queries import (
 )
 from match3_simulator.spec import BENCHMARK_CONFIG
 from match3_simulator.engine_benchmark import engine_level_report
+from match3_simulator.retention import ChurnConfig
 
 
 def _tiny_risk_set():
@@ -228,3 +229,30 @@ def test_engine_level_report_separates_engine_and_surrogate_evidence(
     assert report["bootstrap"]["resampling_unit"] == "player"
     assert report["surrogate_check"]["role"] == "calibration_diagnostic_only"
     assert len(report["engine"]["causal"]) == len(surface.grid)
+
+
+def test_engine_level_report_uses_explicit_churn_config(tiny_engine) -> None:
+    risk_set, surface = tiny_engine
+    model = load_win_propensity_model()
+    first = engine_level_report(
+        risk_set,
+        surface,
+        model,
+        churn_config=ChurnConfig(
+            intercept=-8.0,
+            deviation_coefficient=50.0,
+            mastery_target=0.35,
+        ),
+    )
+    second = engine_level_report(
+        risk_set,
+        surface,
+        model,
+        churn_config=ChurnConfig(
+            intercept=-2.0,
+            deviation_coefficient=500.0,
+            mastery_target=0.35,
+        ),
+    )
+
+    assert first["engine"]["causal"] != second["engine"]["causal"]
