@@ -20,6 +20,7 @@ from .heads import (
 )
 from .model import ContinuousCausalVAE, PredictiveTarget
 from .rollout import NetworkActionPolicy
+from .rssm import FastRSSM, RSSMConfig
 from .train import (
     ActionTrainConfig,
     VAETrainConfig,
@@ -45,9 +46,11 @@ __all__ = [
     "ContinuousCausalVAE",
     "CorrelatedSkillTransform",
     "EvidenceHead",
+    "FastRSSM",
     "NetworkActionPolicy",
     "PrefixEncoderConfig",
     "PredictiveTarget",
+    "RSSMConfig",
     "WinHead",
     "action_to_index",
     "action_dataset_from_episodes",
