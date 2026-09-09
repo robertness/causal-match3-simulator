@@ -69,6 +69,9 @@ def load_generative_world_model_checkpoint(
             "checkpoint contains unexpected model parameters: "
             + ", ".join(sorted(incompatible.unexpected_keys))
         )
+    if "churn_head.raw_margin_deviation" in incompatible.missing_keys:
+        with torch.no_grad():
+            model.churn_head.raw_margin_deviation.fill_(-20.0)
     return model.to(device=device, dtype=torch.float32).eval()
 
 

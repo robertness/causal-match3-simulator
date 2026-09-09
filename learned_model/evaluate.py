@@ -54,6 +54,9 @@ def load_continuous_vae_checkpoint(
     }
     if set(incompatible.missing_keys) - allowed_missing or incompatible.unexpected_keys:
         raise ValueError("checkpoint parameters do not match the continuous VAE")
+    if "churn_head.raw_margin_deviation" in incompatible.missing_keys:
+        with torch.no_grad():
+            model.churn_head.raw_margin_deviation.fill_(-20.0)
     return model.to(device=device, dtype=torch.float32).eval()
 
 

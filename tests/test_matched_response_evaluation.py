@@ -144,6 +144,7 @@ def test_production_checkpoint_reloads_for_fresh_process_evaluation(tmp_path) ->
     torch.save(legacy_payload, legacy_path)
     legacy = load_generative_world_model_checkpoint(legacy_path)
     assert legacy.arm is ModelArm.CAUSAL
+    assert torch.all(legacy.churn_head.margin_deviation_coefficient < 1e-6)
 
 
 def test_free_running_curve_holds_context_fixed_across_interventions() -> None:
