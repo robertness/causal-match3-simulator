@@ -200,11 +200,11 @@ def local_match_cells(
 def _created_stripe(
     swapped: np.ndarray,
     action: Action,
-    specials: np.ndarray | None = None,
+    special_grid: np.ndarray | None = None,
 ) -> tuple[int, int, int] | None:
     candidates: list[tuple[int, int, int, int]] = []
     for row, col in action.cells:
-        if specials is not None and specials[row, col] != NO_SPECIAL:
+        if special_grid is not None and special_grid[row, col] != NO_SPECIAL:
             continue
         horizontal = _run_cells(swapped, row, col, 0, 1)
         vertical = _run_cells(swapped, row, col, 1, 0)
