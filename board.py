@@ -198,10 +198,14 @@ def local_match_cells(
 
 
 def _created_stripe(
-    swapped: np.ndarray, action: Action
+    swapped: np.ndarray,
+    action: Action,
+    specials: np.ndarray | None = None,
 ) -> tuple[int, int, int] | None:
     candidates: list[tuple[int, int, int, int]] = []
     for row, col in action.cells:
+        if specials is not None and specials[row, col] != NO_SPECIAL:
+            continue
         horizontal = _run_cells(swapped, row, col, 0, 1)
         vertical = _run_cells(swapped, row, col, 1, 0)
         if len(horizontal) == 4:
@@ -269,7 +273,7 @@ def immediate_effect(
         if specials is None
         else _apply_swap_specials(specials, action)
     )
-    creation = _created_stripe(swapped, action)
+    creation = _created_stripe(swapped, action, special_grid)
     preserve = None if creation is None else creation[:2]
     cleared_mask, _ = _expand_striped_clear(
         mask, special_grid, preserve=preserve
@@ -461,7 +465,7 @@ def resolve_move(
     board_swapped = board.copy()
     specials = _apply_swap_specials(state.specials, action)
     specials_swapped = specials.copy()
-    created_special = _created_stripe(board, action)
+    created_special = _created_stripe(board, action, specials)
 
     steps = settle(
         board,

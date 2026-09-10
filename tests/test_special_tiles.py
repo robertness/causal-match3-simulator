@@ -50,6 +50,41 @@ def test_horizontal_four_match_creates_stripe_at_moved_tile() -> None:
     assert transition.goal_cleared == 3
 
 
+def test_existing_stripe_in_four_match_activates_instead_of_being_replaced() -> None:
+    board = np.asarray(
+        [
+            [1, 2, 3, 4, 0],
+            [2, 3, 1, 0, 1],
+            [1, 1, 2, 1, 3],
+            [3, 4, 0, 2, 4],
+            [4, 0, 2, 3, 0],
+        ],
+        dtype=np.int8,
+    )
+    specials = np.full(board.shape, NO_SPECIAL, dtype=np.int8)
+    specials[1, 2] = HORIZONTAL_STRIPE
+    state = State(
+        board=board,
+        specials=specials,
+        moves_left=10,
+        goals_left=20,
+        goal_colour=1,
+    )
+
+    _, transition = resolve_move(
+        state,
+        Action(1, 2, 1, 0),
+        LevelContext(height=5, width=5),
+        _draw,
+    )
+
+    assert transition.created_specials == []
+    assert (2, 2) in transition.activated_specials
+    assert {(2, col) for col in range(5)} <= set(
+        transition.steps[0].matched
+    )
+
+
 def test_vertical_four_match_creates_vertical_stripe() -> None:
     board = np.asarray(
         [
