@@ -10,12 +10,13 @@ and world-model experiments.
 - `D`: baseline difficulty tier
 - `K`: stable continuous player skill: search, pattern, planning, and strategy
 - `E`: difficulty served by the DDA policy
-- `S_t`: board state, goal colour, moves remaining, and goals remaining
+- `S_t`: color and special-kind grids, goal colour, moves remaining, and goals remaining
 - `A_t`: adjacent-tile swap
 - `X`: typed task evidence generated through a sparse multidimensional Q-matrix
 - `R`: indicator that the player completed the level within the move budget
-- `M`: experienced mastery updated from realized completion
-- `C`: absorbing next-attempt churn conditioned on post-attempt mastery
+- `M`: recency-weighted expected-experience state updated from realized completion
+- `Q`: signed completion margin for early wins and unmet quotas
+- `C`: absorbing next-attempt churn conditioned on post-attempt `M` and `Q`
 
 The primary target is the level-specific difficulty minimizing next-attempt churn:
 
@@ -24,9 +25,10 @@ argmin_e P(C_i,21 = 1 | do(E_i,20 = e), L_i,20 = l)
 ```
 
 Attempts 1--19 form the strict history prefix for the landmark query. After each
-completed attempt, realized completion updates mastery,
+completed attempt, realized completion updates expected experience,
 `M_next = M + rho * (R - M)`, and active players face a level-specific,
-U-shaped churn hazard around the mastery target. The frozen win-propensity model
+two-sided churn hazard whose over-challenge curvature may exceed its easy-side
+curvature. The frozen win-propensity model
 is retained only as an engine-response diagnostic; it is not a parent of churn.
 In natural data, the DDA serves harder content to stronger players, while skill
 also improves action quality. Calibration pilots that fail the preregistered
@@ -35,6 +37,11 @@ engine gates remain pilot artifacts rather than benchmark results.
 `D` is sampled from `p(D | L)`: there is no `K -> D` edge. Skill adaptation acts
 through `K -> E`, and the tier has a separate state effect through its move
 budget.
+
+Runs of four created by a swap produce horizontal or vertical striped tiles.
+When matched, stripes clear their row or column and can trigger other stripes
+in the same cascade round. Color and special kind are stored separately so
+specials do not alter color-match detection.
 
 ## Install
 
@@ -107,8 +114,8 @@ This writes deployable `episodes.csv` and `transitions.npz`, a separate
 simulator-only `oracle/attempts.csv`, and a manifest containing configuration,
 row counts, code revision, and artifact hashes. True `K`, true `M`, oracle win
 propensity, and churn probabilities never appear in either deployable artifact.
-The transition artifact includes level, tier, served difficulty, next-state
-counters, and episode/player identifiers so `load_gameplay_transition_dataset`
+The transition artifact includes level, tier, served difficulty, current and
+next special grids, next-state counters, and episode/player identifiers so `load_gameplay_transition_dataset`
 can construct masked `GameplayRSSM` sequence batches directly.
 
 Run a board-engine calibration pilot and render its curves:
@@ -204,7 +211,7 @@ within-stratum variation in served difficulty. Level-aligned `dda_gains=` and
 `e_sigmas=` support calibration runs without changing module defaults. Passing
 `E=e` clamps the treatment and samples from `do(E=e)`.
 
-The engine CLI likewise accepts explicit mastery, churn, assignment, and grid
-parameters. Parameters selected on calibration seeds are not promoted to live
+The engine CLI likewise accepts explicit expected-experience, easy/hard-side
+churn, assignment, and grid parameters. Parameters selected on calibration seeds are not promoted to live
 defaults until all levels pass on every held-out validation seed, including
 player-bootstrap direction and overlap gates.

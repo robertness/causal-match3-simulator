@@ -85,7 +85,9 @@ def write_thumbnail(episode, path: str | Path, theme: Theme | None = None) -> Pa
         caption=f"{episode.level.name} · {episode.tier or 'given'}",
         subcaption=f"K={episode.player.label}  E={episode.E:+.2f}",
     )
-    save_png(render_board(state.board, hud, theme), path)
+    save_png(
+        render_board(state.board, hud, theme, specials=state.specials), path
+    )
     return path
 
 
