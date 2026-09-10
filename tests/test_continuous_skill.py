@@ -124,14 +124,17 @@ def test_scm_and_retention_import_in_either_order() -> None:
     assert importlib.reload(retention)
 
 
-def test_schema_v2_serializes_named_skill_coordinates() -> None:
+def test_schema_v3_serializes_skill_and_special_coordinates() -> None:
     pyro.set_rng_seed(9)
     episode = ground_truth_model(max_steps=1)
     document = episode_to_dict(episode)
     row = summary_row(episode)
 
-    assert document["version"] == 2
+    assert document["version"] == 3
     assert set(document["player"]["skill"]) == set(SKILL_NAMES)
+    assert np.shape(document["states"][0]["specials"]) == (8, 8)
+    assert "striped_tiles_created" in document["outcome"]
+    assert "striped_tiles_activated" in document["outcome"]
     assert {f"k_{name}" for name in SKILL_NAMES} <= set(row)
     assert "segment" not in row
     assert "phi" not in row

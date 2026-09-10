@@ -17,6 +17,8 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 import pygame  # noqa: E402  (import after the driver hints)
 
+from .spec import HORIZONTAL_STRIPE, NO_SPECIAL, VERTICAL_STRIPE
+
 #: Tile colours. Each also gets a distinct inner glyph so the board stays
 #: readable in greyscale and for colour-vision deficiency.
 PALETTE: tuple[tuple[int, int, int], ...] = (
@@ -75,6 +77,7 @@ class Tile:
     scale: float = 1.0
     alpha: float = 1.0
     glow: float = 0.0
+    special: int = NO_SPECIAL
 
 
 @dataclass
@@ -152,13 +155,36 @@ def draw_tile(surface: pygame.Surface, tile: Tile, theme: Theme) -> None:
     else:
         pygame.draw.polygon(layer, ink, _glyph_points(glyph, cx, cy, r))
 
+    stripe_ink = (*_mix(base, (255, 255, 255), 0.82), 245)
+    thickness = max(3, int(size * 0.10))
+    if tile.special == HORIZONTAL_STRIPE:
+        pygame.draw.line(
+            layer,
+            stripe_ink,
+            (size * 0.14, size * 0.50),
+            (size * 0.86, size * 0.50),
+            thickness,
+        )
+    elif tile.special == VERTICAL_STRIPE:
+        pygame.draw.line(
+            layer,
+            stripe_ink,
+            (size * 0.50, size * 0.14),
+            (size * 0.50, size * 0.86),
+            thickness,
+        )
+
     if tile.alpha < 1.0:
         layer.set_alpha(int(round(255 * tile.alpha)))
 
     surface.blit(layer, (tile.x - size / 2, tile.y - size / 2))
 
 
-def board_tiles(board: np.ndarray, theme: Theme) -> list[Tile]:
+def board_tiles(
+    board: np.ndarray,
+    theme: Theme,
+    specials: np.ndarray | None = None,
+) -> list[Tile]:
     tiles: list[Tile] = []
     height, width = board.shape
     for row in range(height):
@@ -167,7 +193,8 @@ def board_tiles(board: np.ndarray, theme: Theme) -> list[Tile]:
             if value < 0:
                 continue
             x, y = theme.centre(row, col)
-            tiles.append(Tile(x, y, value))
+            special = NO_SPECIAL if specials is None else int(specials[row, col])
+            tiles.append(Tile(x, y, value, special=special))
     return tiles
 
 
@@ -237,10 +264,13 @@ def render_board(
     board: np.ndarray,
     hud: Hud,
     theme: Theme | None = None,
+    specials: np.ndarray | None = None,
 ) -> pygame.Surface:
     theme = theme or Theme()
     height, width = board.shape
-    return render_tiles(board_tiles(board, theme), hud, height, width, theme)
+    return render_tiles(
+        board_tiles(board, theme, specials), hud, height, width, theme
+    )
 
 
 def save_png(surface: pygame.Surface, path) -> None:

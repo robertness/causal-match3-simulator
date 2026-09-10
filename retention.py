@@ -37,17 +37,33 @@ class ChurnConfig:
 
     intercept: float = -14.0
     deviation_coefficient: float = 512.0
+    overchallenge_deviation_coefficient: float | None = None
     mastery_target: float = 0.35
     margin_deviation_coefficient: float = 0.0
+    margin_overchallenge_deviation_coefficient: float | None = None
     margin_target: float = 0.0
 
     def __post_init__(self) -> None:
         if self.deviation_coefficient <= 0:
             raise ValueError("deviation_coefficient must be positive")
+        if (
+            self.overchallenge_deviation_coefficient is not None
+            and self.overchallenge_deviation_coefficient <= 0
+        ):
+            raise ValueError(
+                "overchallenge_deviation_coefficient must be positive"
+            )
         if not 0.0 < self.mastery_target < 1.0:
             raise ValueError("mastery_target must lie in (0, 1)")
         if self.margin_deviation_coefficient < 0:
             raise ValueError("margin_deviation_coefficient must be non-negative")
+        if (
+            self.margin_overchallenge_deviation_coefficient is not None
+            and self.margin_overchallenge_deviation_coefficient < 0
+        ):
+            raise ValueError(
+                "margin_overchallenge_deviation_coefficient must be non-negative"
+            )
         if not -1.0 <= self.margin_target <= 1.0:
             raise ValueError("margin_target must lie in [-1, 1]")
 
@@ -59,8 +75,10 @@ class ChurnSchedule:
     level_names: tuple[str, ...] = ("orchard", "harbour", "foundry")
     intercepts: tuple[float, ...] = (-14.0, -10.0, -16.0)
     deviation_coefficients: tuple[float, ...] = (512.0, 128.0, 192.0)
+    overchallenge_deviation_coefficients: tuple[float, ...] | None = None
     mastery_target: float = 0.35
     margin_deviation_coefficients: tuple[float, ...] = (0.0, 0.0, 0.0)
+    margin_overchallenge_deviation_coefficients: tuple[float, ...] | None = None
     margin_targets: tuple[float, ...] = (0.0, 0.0, 0.0)
 
     def __post_init__(self) -> None:
@@ -73,12 +91,35 @@ class ChurnSchedule:
             raise ValueError("deviation coefficients must align with levels")
         if any(value <= 0 for value in self.deviation_coefficients):
             raise ValueError("deviation coefficients must be positive")
+        if (
+            self.overchallenge_deviation_coefficients is not None
+            and len(self.overchallenge_deviation_coefficients) != n_levels
+        ):
+            raise ValueError("overchallenge deviation coefficients must align with levels")
+        if self.overchallenge_deviation_coefficients is not None and any(
+            value <= 0 for value in self.overchallenge_deviation_coefficients
+        ):
+            raise ValueError("overchallenge deviation coefficients must be positive")
         if not 0.0 < self.mastery_target < 1.0:
             raise ValueError("mastery_target must lie in (0, 1)")
         if len(self.margin_deviation_coefficients) != n_levels:
             raise ValueError("margin deviation coefficients must align with levels")
         if any(value < 0 for value in self.margin_deviation_coefficients):
             raise ValueError("margin deviation coefficients must be non-negative")
+        if (
+            self.margin_overchallenge_deviation_coefficients is not None
+            and len(self.margin_overchallenge_deviation_coefficients) != n_levels
+        ):
+            raise ValueError(
+                "margin overchallenge deviation coefficients must align with levels"
+            )
+        if self.margin_overchallenge_deviation_coefficients is not None and any(
+            value < 0
+            for value in self.margin_overchallenge_deviation_coefficients
+        ):
+            raise ValueError(
+                "margin overchallenge deviation coefficients must be non-negative"
+            )
         if len(self.margin_targets) != n_levels:
             raise ValueError("margin targets must align with levels")
         if any(not -1.0 <= value <= 1.0 for value in self.margin_targets):
@@ -89,8 +130,18 @@ class ChurnSchedule:
         return ChurnConfig(
             intercept=self.intercepts[index],
             deviation_coefficient=self.deviation_coefficients[index],
+            overchallenge_deviation_coefficient=(
+                None
+                if self.overchallenge_deviation_coefficients is None
+                else self.overchallenge_deviation_coefficients[index]
+            ),
             mastery_target=self.mastery_target,
             margin_deviation_coefficient=self.margin_deviation_coefficients[index],
+            margin_overchallenge_deviation_coefficient=(
+                None
+                if self.margin_overchallenge_deviation_coefficients is None
+                else self.margin_overchallenge_deviation_coefficients[index]
+            ),
             margin_target=self.margin_targets[index],
         )
 
@@ -281,9 +332,17 @@ def mastery_mismatch_hazard(
     mastery = np.asarray(mastery_after, dtype=np.float64)
     if np.any((mastery < 0.0) | (mastery > 1.0)):
         raise ValueError("mastery_after must lie in [0, 1]")
-    logit = config.intercept + config.deviation_coefficient * (
-        mastery - config.mastery_target
-    ) ** 2
+    mastery_deviation = mastery - config.mastery_target
+    mastery_coefficient = np.where(
+        mastery_deviation < 0.0,
+        (
+            config.deviation_coefficient
+            if config.overchallenge_deviation_coefficient is None
+            else config.overchallenge_deviation_coefficient
+        ),
+        config.deviation_coefficient,
+    )
+    logit = config.intercept + mastery_coefficient * mastery_deviation**2
     if completion_margin is None:
         if config.margin_deviation_coefficient:
             raise ValueError("completion_margin is required by churn config")
@@ -291,9 +350,17 @@ def mastery_mismatch_hazard(
         margin = np.asarray(completion_margin, dtype=np.float64)
         if np.any((margin < -1.0) | (margin > 1.0)):
             raise ValueError("completion_margin must lie in [-1, 1]")
-        logit = logit + config.margin_deviation_coefficient * (
-            margin - config.margin_target
-        ) ** 2
+        margin_deviation = margin - config.margin_target
+        margin_coefficient = np.where(
+            margin_deviation < 0.0,
+            (
+                config.margin_deviation_coefficient
+                if config.margin_overchallenge_deviation_coefficient is None
+                else config.margin_overchallenge_deviation_coefficient
+            ),
+            config.margin_deviation_coefficient,
+        )
+        logit = logit + margin_coefficient * margin_deviation**2
     return _sigmoid(logit)
 
 

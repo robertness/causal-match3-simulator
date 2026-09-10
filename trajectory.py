@@ -23,7 +23,7 @@ def _board(array: np.ndarray) -> list[list[int]]:
 
 def episode_to_dict(episode: Episode) -> dict[str, Any]:
     return {
-        "version": 2,
+        "version": 3,
         "level": {
             "name": episode.level.name,
             "height": episode.level.height,
@@ -53,6 +53,14 @@ def episode_to_dict(episode: Episode) -> dict[str, Any]:
             "moves_used": episode.moves_used,
             "goals_cleared": episode.goals_cleared,
             "reshuffles": episode.reshuffles,
+            "striped_tiles_created": sum(
+                len(transition.created_specials)
+                for transition in episode.transitions
+            ),
+            "striped_tiles_activated": sum(
+                len(transition.activated_specials)
+                for transition in episode.transitions
+            ),
         },
         "policy_diagnostics": [
             {
@@ -70,6 +78,7 @@ def episode_to_dict(episode: Episode) -> dict[str, Any]:
             {
                 "t": s.t,
                 "board": _board(s.board),
+                "specials": _board(s.specials),
                 "moves_left": s.moves_left,
                 "goals_left": s.goals_left,
                 "goal_colour": s.goal_colour,
@@ -89,12 +98,33 @@ def episode_to_dict(episode: Episode) -> dict[str, Any]:
                 else None,
                 "board_before": _board(tr.board_before),
                 "board_swapped": _board(tr.board_swapped),
+                "specials_swapped": (
+                    None
+                    if tr.specials_swapped is None
+                    else _board(tr.specials_swapped)
+                ),
                 "reshuffled": bool(tr.reshuffled),
                 "steps": [
                     {
                         "matched": [list(c) for c in step.matched],
                         "board_before": _board(step.board_before),
                         "board_after": _board(step.board_after),
+                        "specials_before": (
+                            None
+                            if step.specials_before is None
+                            else _board(step.specials_before)
+                        ),
+                        "specials_after": (
+                            None
+                            if step.specials_after is None
+                            else _board(step.specials_after)
+                        ),
+                        "created_specials": [
+                            list(special) for special in step.created_specials
+                        ],
+                        "activated_specials": [
+                            list(special) for special in step.activated_specials
+                        ],
                         "fall": [list(f) for f in step.fall],
                         "spawned": [list(s) for s in step.spawned],
                         "goal_cleared": step.goal_cleared,
@@ -118,7 +148,7 @@ def attempt_record_to_dict(record: AttemptRecord) -> dict[str, Any]:
     document = episode_to_dict(record.episode)
     document.update(
         {
-            "version": 3,
+            "version": 4,
             "player_id": record.player_id,
             "attempt_id": record.attempt_id,
             "active_before": 1,
@@ -135,7 +165,7 @@ def attempt_record_to_dict(record: AttemptRecord) -> dict[str, Any]:
 
 def player_trajectory_to_dict(trajectory: PlayerTrajectory) -> dict[str, Any]:
     return {
-        "version": 3,
+        "version": 4,
         "player_id": trajectory.player_id,
         "player": {
             "label": trajectory.player.label,
@@ -189,6 +219,14 @@ def summary_row(episode: Episode) -> dict[str, Any]:
         )
         if episode.transitions
         else 0.0,
+        "striped_tiles_created": sum(
+            len(transition.created_specials)
+            for transition in episode.transitions
+        ),
+        "striped_tiles_activated": sum(
+            len(transition.activated_specials)
+            for transition in episode.transitions
+        ),
     }
     diagnostics = episode.action_diagnostics
     row.update(

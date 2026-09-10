@@ -571,7 +571,14 @@ def materialize_engine_landmark_cohort(
     margins = panel.warmup_completion_margins
     if (
         any(
-            _churn_for_level(churn_config, level.name).margin_deviation_coefficient
+            (
+                _churn_for_level(
+                    churn_config, level.name
+                ).margin_deviation_coefficient
+                or _churn_for_level(
+                    churn_config, level.name
+                ).margin_overchallenge_deviation_coefficient
+            )
             for level in LEVELS
         )
         and margins.shape != panel.warmup_outcomes.shape
@@ -1911,7 +1918,17 @@ def evaluate_landmark_benchmark(
         level_report["churn"] = {
             "intercept": current_churn.intercept,
             "deviation_coefficient": current_churn.deviation_coefficient,
+            "overchallenge_deviation_coefficient": (
+                current_churn.overchallenge_deviation_coefficient
+            ),
             "mastery_target": current_churn.mastery_target,
+            "margin_deviation_coefficient": (
+                current_churn.margin_deviation_coefficient
+            ),
+            "margin_overchallenge_deviation_coefficient": (
+                current_churn.margin_overchallenge_deviation_coefficient
+            ),
+            "margin_target": current_churn.margin_target,
         }
         levels[risk_set.level_name] = level_report
     return {
@@ -1976,6 +1993,9 @@ def main() -> None:  # pragma: no cover - CLI
     parser.add_argument("--skill-gain", type=float, default=None)
     parser.add_argument("--sigma", type=float, default=None)
     parser.add_argument("--deviation-coefficient", type=float, default=None)
+    parser.add_argument(
+        "--overchallenge-deviation-coefficient", type=float, default=None
+    )
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--bootstrap", type=int, default=0)
     parser.add_argument("--require-pass", action="store_true")
@@ -1993,8 +2013,20 @@ def main() -> None:  # pragma: no cover - CLI
     )
     churn_config = (
         CHURN_SCHEDULE
-        if args.deviation_coefficient is None
-        else ChurnConfig(deviation_coefficient=args.deviation_coefficient)
+        if (
+            args.deviation_coefficient is None
+            and args.overchallenge_deviation_coefficient is None
+        )
+        else ChurnConfig(
+            deviation_coefficient=(
+                ChurnConfig().deviation_coefficient
+                if args.deviation_coefficient is None
+                else args.deviation_coefficient
+            ),
+            overchallenge_deviation_coefficient=(
+                args.overchallenge_deviation_coefficient
+            ),
+        )
     )
     if args.all_validation_seeds:
         report = evaluate_validation_suite(

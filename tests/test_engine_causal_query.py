@@ -503,10 +503,18 @@ def test_engine_cli_keeps_initial_mastery_and_hazard_target_distinct(
             "0.27",
             "--mastery-target",
             "0.33",
+            "--churn-overchallenge-curvatures",
+            "40",
+            "50",
+            "60",
             "--churn-margin-curvatures",
             "10",
             "20",
             "30",
+            "--churn-margin-overchallenge-curvatures",
+            "70",
+            "80",
+            "90",
             "--churn-margin-targets",
             "-0.1",
             "-0.2",
@@ -520,9 +528,17 @@ def test_engine_cli_keeps_initial_mastery_and_hazard_target_distinct(
 
     assert captured["mastery_config"].initial == 0.27
     assert captured["churn_config"].mastery_target == 0.33
+    assert captured["churn_config"].overchallenge_deviation_coefficients == (
+        40.0,
+        50.0,
+        60.0,
+    )
     assert captured["churn_config"].margin_deviation_coefficients == (
         10.0,
         20.0,
         30.0,
     )
+    assert captured[
+        "churn_config"
+    ].margin_overchallenge_deviation_coefficients == (70.0, 80.0, 90.0)
     assert captured["churn_config"].margin_targets == (-0.1, -0.2, -0.3)

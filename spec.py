@@ -19,6 +19,9 @@ from typing import Iterable, Sequence
 import numpy as np
 
 EMPTY = -1
+NO_SPECIAL = 0
+HORIZONTAL_STRIPE = 1
+VERTICAL_STRIPE = 2
 
 
 @dataclass(frozen=True)
@@ -233,6 +236,25 @@ class State:
     goals_left: int
     goal_colour: int
     t: int = 0
+    specials: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        if self.specials is None:
+            self.specials = np.full(
+                self.board.shape, NO_SPECIAL, dtype=np.int8
+            )
+        else:
+            specials = np.asarray(self.specials, dtype=np.int8)
+            if specials.shape != self.board.shape:
+                raise ValueError("specials must align with the board")
+            if np.any(
+                ~np.isin(
+                    specials,
+                    (NO_SPECIAL, HORIZONTAL_STRIPE, VERTICAL_STRIPE),
+                )
+            ):
+                raise ValueError("specials contain an unknown kind")
+            self.specials = specials
 
     def copy(self) -> "State":
         return State(
@@ -241,6 +263,7 @@ class State:
             self.goals_left,
             self.goal_colour,
             self.t,
+            self.specials.copy(),
         )
 
     @property
@@ -269,6 +292,10 @@ class CascadeStep:
     fall: list[tuple[int, int, int, int]]
     spawned: list[tuple[int, int, int]]
     goal_cleared: int
+    specials_before: np.ndarray | None = None
+    specials_after: np.ndarray | None = None
+    created_specials: list[tuple[int, int, int]] = field(default_factory=list)
+    activated_specials: list[tuple[int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -282,6 +309,7 @@ class Transition:
     action: Action | None
     board_before: np.ndarray
     board_swapped: np.ndarray
+    specials_swapped: np.ndarray | None = None
     steps: list[CascadeStep] = field(default_factory=list)
     reshuffled: bool = False
 
@@ -296,6 +324,14 @@ class Transition:
     @property
     def cascade_depth(self) -> int:
         return len(self.steps)
+
+    @property
+    def created_specials(self) -> list[tuple[int, int, int]]:
+        return [special for step in self.steps for special in step.created_specials]
+
+    @property
+    def activated_specials(self) -> list[tuple[int, int]]:
+        return [special for step in self.steps for special in step.activated_specials]
 
 
 def uniform_board(rng: np.random.Generator, level: LevelContext) -> np.ndarray:
@@ -318,6 +354,9 @@ def state_from(
 
 __all__ = [
     "EMPTY",
+    "HORIZONTAL_STRIPE",
+    "NO_SPECIAL",
+    "VERTICAL_STRIPE",
     "Action",
     "BENCHMARK_CONFIG",
     "BenchmarkConfig",

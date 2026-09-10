@@ -252,11 +252,34 @@ class ChurnHead(nn.Module):
                 ]
             )
         )
+        overchallenge_deviation = (
+            CHURN_SCHEDULE.deviation_coefficients
+            if CHURN_SCHEDULE.overchallenge_deviation_coefficients is None
+            else CHURN_SCHEDULE.overchallenge_deviation_coefficients
+        )
+        self.raw_overchallenge_deviation = nn.Parameter(
+            torch.tensor(
+                [_inverse_softplus(value) for value in overchallenge_deviation]
+            )
+        )
         self.raw_margin_deviation = nn.Parameter(
             torch.tensor(
                 [
                     _inverse_softplus(max(value, 0.1))
                     for value in CHURN_SCHEDULE.margin_deviation_coefficients
+                ]
+            )
+        )
+        margin_overchallenge_deviation = (
+            CHURN_SCHEDULE.margin_deviation_coefficients
+            if CHURN_SCHEDULE.margin_overchallenge_deviation_coefficients is None
+            else CHURN_SCHEDULE.margin_overchallenge_deviation_coefficients
+        )
+        self.raw_margin_overchallenge_deviation = nn.Parameter(
+            torch.tensor(
+                [
+                    _inverse_softplus(max(value, 0.1))
+                    for value in margin_overchallenge_deviation
                 ]
             )
         )
@@ -271,8 +294,16 @@ class ChurnHead(nn.Module):
         return F.softplus(self.raw_deviation)
 
     @property
+    def overchallenge_deviation_coefficient(self) -> torch.Tensor:
+        return F.softplus(self.raw_overchallenge_deviation)
+
+    @property
     def margin_deviation_coefficient(self) -> torch.Tensor:
         return F.softplus(self.raw_margin_deviation)
+
+    @property
+    def margin_overchallenge_deviation_coefficient(self) -> torch.Tensor:
+        return F.softplus(self.raw_margin_overchallenge_deviation)
 
     @property
     def margin_target(self) -> torch.Tensor:
@@ -291,14 +322,22 @@ class ChurnHead(nn.Module):
             if completion_margin is None
             else completion_margin.to(mastery_after.dtype)
         )
+        mastery_deviation = mastery_after - self.config.mastery_target
+        mastery_coefficient = torch.where(
+            mastery_deviation < 0.0,
+            self.overchallenge_deviation_coefficient[level_index],
+            self.deviation_coefficient[level_index],
+        )
+        margin_deviation = margin - self.margin_target[level_index]
+        margin_coefficient = torch.where(
+            margin_deviation < 0.0,
+            self.margin_overchallenge_deviation_coefficient[level_index],
+            self.margin_deviation_coefficient[level_index],
+        )
         return (
             self.intercept[level_index]
-            + self.deviation_coefficient[
-            level_index
-            ]
-            * (mastery_after - self.config.mastery_target).square()
-            + self.margin_deviation_coefficient[level_index]
-            * (margin - self.margin_target[level_index]).square()
+            + mastery_coefficient * mastery_deviation.square()
+            + margin_coefficient * margin_deviation.square()
         )
 
     def probabilities(

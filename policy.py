@@ -140,9 +140,11 @@ def move_feature_table(
     for index, action in enumerate(moves):
         swapped = apply_swap(board, action)
         matched = local_match_cells(swapped, action.cells)
-        total[index] = len(matched)
-        goal[index] = sum(
-            1 for row, col in matched if swapped[row, col] == goal_colour
+        total[index], goal[index] = immediate_effect(
+            board,
+            action,
+            goal_colour,
+            specials=None if state is None else state.specials,
         )
         setup[index] = (
             deterministic_rollout_value(state, action)
@@ -154,7 +156,7 @@ def move_feature_table(
 
 def deterministic_rollout_value(state: State, action: Action) -> float:
     """Hypothetical cascade and next move under a board-derived refill stream."""
-    payload = state.board.tobytes() + bytes(
+    payload = state.board.tobytes() + state.specials.tobytes() + bytes(
         (action.row, action.col, action.drow, action.dcol)
     )
     seed = int.from_bytes(hashlib.sha256(payload).digest()[:8], "little")
@@ -175,7 +177,10 @@ def deterministic_rollout_value(state: State, action: Action) -> float:
     next_best = 0.0
     for next_action in next_moves:
         total_cleared, goal_cleared = immediate_effect(
-            next_state.board, next_action, state.goal_colour
+            next_state.board,
+            next_action,
+            state.goal_colour,
+            specials=next_state.specials,
         )
         next_best = max(next_best, goal_cleared + 0.10 * total_cleared)
     return transition.goal_cleared + 0.50 * next_best

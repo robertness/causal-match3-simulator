@@ -136,7 +136,9 @@ def test_production_checkpoint_reloads_for_fresh_process_evaluation(tmp_path) ->
         for name, value in legacy_payload["model_state_dict"].items()
         if name
         not in {
+            "churn_head.raw_overchallenge_deviation",
             "churn_head.raw_margin_deviation",
+            "churn_head.raw_margin_overchallenge_deviation",
             "churn_head.raw_margin_target",
         }
     }
@@ -144,7 +146,14 @@ def test_production_checkpoint_reloads_for_fresh_process_evaluation(tmp_path) ->
     torch.save(legacy_payload, legacy_path)
     legacy = load_generative_world_model_checkpoint(legacy_path)
     assert legacy.arm is ModelArm.CAUSAL
+    torch.testing.assert_close(
+        legacy.churn_head.overchallenge_deviation_coefficient,
+        legacy.churn_head.deviation_coefficient,
+    )
     assert torch.all(legacy.churn_head.margin_deviation_coefficient < 1e-6)
+    assert torch.all(
+        legacy.churn_head.margin_overchallenge_deviation_coefficient < 1e-6
+    )
 
 
 def test_free_running_curve_holds_context_fixed_across_interventions() -> None:

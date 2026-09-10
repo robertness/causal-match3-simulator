@@ -120,6 +120,8 @@ class GameplayTransitionDataset:
     levels: np.ndarray
     tiers: np.ndarray
     served_difficulty: np.ndarray
+    specials: np.ndarray | None = None
+    next_specials: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         n_rows = len(self.episode_ids)
@@ -146,6 +148,16 @@ class GameplayTransitionDataset:
             raise ValueError("boards must have shape (rows, 64)")
         if np.shape(self.next_boards) != (n_rows, N_CELLS):
             raise ValueError("next_boards must have shape (rows, 64)")
+        for name, values in {
+            "specials": self.specials,
+            "next_specials": self.next_specials,
+        }.items():
+            if values is None:
+                object.__setattr__(
+                    self, name, np.zeros((n_rows, N_CELLS), dtype=np.int64)
+                )
+            elif np.shape(values) != (n_rows, N_CELLS):
+                raise ValueError(f"{name} must have shape (rows, 64)")
         if np.any((self.actions < 0) | (self.actions >= ACTION_SLOTS)):
             raise ValueError("actions contain an index outside the vocabulary")
         if np.any((self.levels < 0) | (self.levels >= len(LEVELS))):
@@ -272,8 +284,22 @@ def load_gameplay_transition_dataset(
                 + ", ".join(sorted(missing))
             )
         version = int(values["schema_version"][0])
-        if version != 2:
+        if version not in (2, 3):
             raise ValueError(f"unsupported transition schema {version}")
+        specials = (
+            values["specials_before"].reshape(-1, N_CELLS).astype(np.int64)
+            if version >= 3
+            else np.zeros_like(
+                values["board_before"].reshape(-1, N_CELLS), dtype=np.int64
+            )
+        )
+        next_specials = (
+            values["specials_after"].reshape(-1, N_CELLS).astype(np.int64)
+            if version >= 3
+            else np.zeros_like(
+                values["board_after"].reshape(-1, N_CELLS), dtype=np.int64
+            )
+        )
         return GameplayTransitionDataset(
             episode_ids=values["episode_id"].astype(np.int64),
             player_ids=values["player_id"].astype(np.int64),
@@ -292,6 +318,8 @@ def load_gameplay_transition_dataset(
             levels=values["level"].astype(np.int64),
             tiers=values["tier"].astype(np.int64),
             served_difficulty=values["served_difficulty"].astype(np.float32),
+            specials=specials,
+            next_specials=next_specials,
         )
 
 
@@ -324,6 +352,8 @@ def gameplay_transition_dataset_from_episodes(
             "step_ids",
             "boards",
             "next_boards",
+            "specials",
+            "next_specials",
             "actions",
             "goal_colours",
             "moves_left",
@@ -345,6 +375,8 @@ def gameplay_transition_dataset_from_episodes(
             rows["step_ids"].append(step_index)
             rows["boards"].append(state.board.ravel())
             rows["next_boards"].append(next_state.board.ravel())
+            rows["specials"].append(state.specials.ravel())
+            rows["next_specials"].append(next_state.specials.ravel())
             rows["actions"].append(action_to_index(action))
             rows["goal_colours"].append(state.goal_colour)
             rows["moves_left"].append(state.moves_left)
@@ -363,6 +395,8 @@ def gameplay_transition_dataset_from_episodes(
         step_ids=np.asarray(rows["step_ids"], dtype=np.int64),
         boards=np.asarray(rows["boards"], dtype=np.int8),
         next_boards=np.asarray(rows["next_boards"], dtype=np.int8),
+        specials=np.asarray(rows["specials"], dtype=np.int8),
+        next_specials=np.asarray(rows["next_specials"], dtype=np.int8),
         actions=np.asarray(rows["actions"], dtype=np.int64),
         goal_colours=np.asarray(rows["goal_colours"], dtype=np.int64),
         moves_left=np.asarray(rows["moves_left"], dtype=np.int64),

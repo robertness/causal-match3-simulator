@@ -56,7 +56,9 @@ def load_generative_world_model_checkpoint(
     model = GenerativeWorldModel(checkpoint_arm, config)
     incompatible = model.load_state_dict(state_dict, strict=False)
     allowed_missing = {
+        "churn_head.raw_overchallenge_deviation",
         "churn_head.raw_margin_deviation",
+        "churn_head.raw_margin_overchallenge_deviation",
         "churn_head.raw_margin_target",
     }
     if set(incompatible.missing_keys) - allowed_missing:
@@ -72,6 +74,18 @@ def load_generative_world_model_checkpoint(
     if "churn_head.raw_margin_deviation" in incompatible.missing_keys:
         with torch.no_grad():
             model.churn_head.raw_margin_deviation.fill_(-20.0)
+    with torch.no_grad():
+        if "churn_head.raw_overchallenge_deviation" in incompatible.missing_keys:
+            model.churn_head.raw_overchallenge_deviation.copy_(
+                model.churn_head.raw_deviation
+            )
+        if (
+            "churn_head.raw_margin_overchallenge_deviation"
+            in incompatible.missing_keys
+        ):
+            model.churn_head.raw_margin_overchallenge_deviation.copy_(
+                model.churn_head.raw_margin_deviation
+            )
     return model.to(device=device, dtype=torch.float32).eval()
 
 

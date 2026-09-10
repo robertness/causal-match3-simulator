@@ -91,7 +91,10 @@ def _calibration_provenance() -> dict[str, object]:
 
 
 def _uses_completion_margin(churn_config: ChurnSchedule) -> bool:
-    return any(churn_config.margin_deviation_coefficients)
+    return any(churn_config.margin_deviation_coefficients) or bool(
+        churn_config.margin_overchallenge_deviation_coefficients
+        and any(churn_config.margin_overchallenge_deviation_coefficients)
+    )
 
 
 def _correlation(left: np.ndarray, right: np.ndarray) -> float | None:
@@ -126,7 +129,11 @@ def engine_level_report(
         mastery_config=mastery_config,
     )
     uses_margin = bool(
-        churn_config and churn_config.margin_deviation_coefficient
+        churn_config
+        and (
+            churn_config.margin_deviation_coefficient
+            or churn_config.margin_overchallenge_deviation_coefficient
+        )
     )
     surrogate = (
         None
@@ -684,7 +691,16 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
     parser.add_argument("--churn-intercepts", type=float, nargs=3, default=None)
     parser.add_argument("--churn-curvatures", type=float, nargs=3, default=None)
     parser.add_argument(
+        "--churn-overchallenge-curvatures", type=float, nargs=3, default=None
+    )
+    parser.add_argument(
         "--churn-margin-curvatures", type=float, nargs=3, default=None
+    )
+    parser.add_argument(
+        "--churn-margin-overchallenge-curvatures",
+        type=float,
+        nargs=3,
+        default=None,
     )
     parser.add_argument("--churn-margin-targets", type=float, nargs=3, default=None)
     parser.add_argument("--assignment-gains", type=float, nargs=3, default=None)
@@ -718,6 +734,11 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
             if args.churn_curvatures is None
             else tuple(args.churn_curvatures)
         ),
+        overchallenge_deviation_coefficients=(
+            CHURN_SCHEDULE.overchallenge_deviation_coefficients
+            if args.churn_overchallenge_curvatures is None
+            else tuple(args.churn_overchallenge_curvatures)
+        ),
         mastery_target=(
             mastery_config.initial
             if args.mastery_target is None
@@ -727,6 +748,11 @@ def main() -> None:  # pragma: no cover - exercised through CLI smoke runs
             CHURN_SCHEDULE.margin_deviation_coefficients
             if args.churn_margin_curvatures is None
             else tuple(args.churn_margin_curvatures)
+        ),
+        margin_overchallenge_deviation_coefficients=(
+            CHURN_SCHEDULE.margin_overchallenge_deviation_coefficients
+            if args.churn_margin_overchallenge_curvatures is None
+            else tuple(args.churn_margin_overchallenge_curvatures)
         ),
         margin_targets=(
             CHURN_SCHEDULE.margin_targets

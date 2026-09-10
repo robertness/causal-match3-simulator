@@ -49,7 +49,9 @@ def load_continuous_vae_checkpoint(
     )
     incompatible = model.load_state_dict(payload["state_dict"], strict=False)
     allowed_missing = {
+        "churn_head.raw_overchallenge_deviation",
         "churn_head.raw_margin_deviation",
+        "churn_head.raw_margin_overchallenge_deviation",
         "churn_head.raw_margin_target",
     }
     if set(incompatible.missing_keys) - allowed_missing or incompatible.unexpected_keys:
@@ -57,6 +59,18 @@ def load_continuous_vae_checkpoint(
     if "churn_head.raw_margin_deviation" in incompatible.missing_keys:
         with torch.no_grad():
             model.churn_head.raw_margin_deviation.fill_(-20.0)
+    with torch.no_grad():
+        if "churn_head.raw_overchallenge_deviation" in incompatible.missing_keys:
+            model.churn_head.raw_overchallenge_deviation.copy_(
+                model.churn_head.raw_deviation
+            )
+        if (
+            "churn_head.raw_margin_overchallenge_deviation"
+            in incompatible.missing_keys
+        ):
+            model.churn_head.raw_margin_overchallenge_deviation.copy_(
+                model.churn_head.raw_margin_deviation
+            )
     return model.to(device=device, dtype=torch.float32).eval()
 
 

@@ -65,6 +65,31 @@ def test_churn_head_is_minimized_at_target_and_symmetric() -> None:
     torch.testing.assert_close(churn[0], churn[2])
 
 
+def test_churn_head_can_learn_steeper_overchallenge_penalties() -> None:
+    head = ChurnHead()
+    with torch.no_grad():
+        head.raw_overchallenge_deviation.fill_(5.0)
+        head.raw_deviation.fill_(0.0)
+        head.raw_margin_overchallenge_deviation.fill_(5.0)
+        head.raw_margin_deviation.fill_(0.0)
+    target = CHURN_SCHEDULE.mastery_target
+    level = torch.zeros(2, dtype=torch.long)
+
+    mastery_churn = head.probabilities(
+        torch.tensor([target - 0.2, target + 0.2]),
+        level,
+    )
+    margin_target = head.margin_target[level].detach()
+    margin_churn = head.probabilities(
+        torch.full((2,), target),
+        level,
+        completion_margin=margin_target + torch.tensor([-0.2, 0.2]),
+    )
+
+    assert mastery_churn[0] > mastery_churn[1]
+    assert margin_churn[0] > margin_churn[1]
+
+
 def test_churn_head_has_level_specific_positive_curvature() -> None:
     head = ChurnHead()
     mastery = torch.full((3,), CHURN_SCHEDULE.mastery_target - 0.2)

@@ -60,6 +60,8 @@ from .scm import (
 )
 from .spec import (
     BENCHMARK_CONFIG,
+    HORIZONTAL_STRIPE,
+    NO_SPECIAL,
     SKILL_COVARIANCE,
     SKILL_NAMES,
     SKILL_PROFILES,
@@ -71,6 +73,7 @@ from .spec import (
     PlayerSkill,
     State,
     Transition,
+    VERTICAL_STRIPE,
 )
 
 __version__ = "0.1.0"
@@ -94,7 +97,9 @@ __all__ = [
     "EVIDENCE_SPECS",
     "LEVELS",
     "LevelContext",
+    "HORIZONTAL_STRIPE",
     "MasteryConfig",
+    "NO_SPECIAL",
     "PROXY_NAMES",
     "PlayerSkill",
     "SKILL_COVARIANCE",
@@ -105,6 +110,7 @@ __all__ = [
     "TIER_MOVE_BUDGETS",
     "TIER_NAMES",
     "Transition",
+    "VERTICAL_STRIPE",
     "WinPropensityModel",
     "apply_swap",
     "deal",

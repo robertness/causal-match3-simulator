@@ -240,7 +240,7 @@ def write_transitions(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    before, after, actions = [], [], []
+    before, after, specials_before, specials_after, actions = [], [], [], [], []
     action_indices = []
     moves_left, moves_left_next = [], []
     goals_left, goals_left_next, goal_colour = [], [], []
@@ -269,6 +269,8 @@ def write_transitions(
             assert action is not None
             before.append(state.board)
             after.append(nxt.board)
+            specials_before.append(state.specials)
+            specials_after.append(nxt.specials)
             actions.append([action.row, action.col, action.drow, action.dcol])
             action_indices.append(action_to_index(action))
             moves_left.append(state.moves_left)
@@ -286,9 +288,11 @@ def write_transitions(
                 transition_attempt_id.append(attempt_ids[index])
 
     arrays = {
-        "schema_version": np.asarray([2], dtype=np.int16),
+        "schema_version": np.asarray([3], dtype=np.int16),
         "board_before": np.asarray(before, dtype=np.int8),
         "board_after": np.asarray(after, dtype=np.int8),
+        "specials_before": np.asarray(specials_before, dtype=np.int8),
+        "specials_after": np.asarray(specials_after, dtype=np.int8),
         "action": np.asarray(actions, dtype=np.int8),
         "action_index": np.asarray(action_indices, dtype=np.int16),
         "moves_left": np.asarray(moves_left, dtype=np.int16),

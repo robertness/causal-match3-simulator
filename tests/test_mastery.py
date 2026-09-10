@@ -56,6 +56,32 @@ def test_mastery_hazard_is_symmetric_around_target() -> None:
     assert hazard[0] == pytest.approx(hazard[2])
 
 
+def test_overchallenge_can_have_steeper_hazard_than_underchallenge() -> None:
+    config = ChurnConfig(
+        intercept=-4.0,
+        deviation_coefficient=24.0,
+        overchallenge_deviation_coefficient=72.0,
+        mastery_target=0.55,
+        margin_deviation_coefficient=20.0,
+        margin_overchallenge_deviation_coefficient=60.0,
+        margin_target=0.0,
+    )
+
+    mastery_hazard = mastery_mismatch_hazard(
+        np.asarray([0.35, 0.75]),
+        config,
+        completion_margin=np.zeros(2),
+    )
+    margin_hazard = mastery_mismatch_hazard(
+        np.full(2, 0.55),
+        config,
+        completion_margin=np.asarray([-0.2, 0.2]),
+    )
+
+    assert mastery_hazard[0] > mastery_hazard[1]
+    assert margin_hazard[0] > margin_hazard[1]
+
+
 def test_mastery_hazard_is_stable_at_extreme_logits() -> None:
     hazard = mastery_mismatch_hazard(
         np.asarray([0.0, 1.0]),

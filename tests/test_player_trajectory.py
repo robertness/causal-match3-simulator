@@ -102,7 +102,7 @@ def test_trajectory_schema_records_causal_and_churn_fields() -> None:
     document = player_trajectory_to_dict(trajectory)
     row = attempt_summary_row(trajectory.attempts[0])
 
-    assert document["version"] == 3
+    assert document["version"] == 4
     assert document["player_id"] == 17
     assert len(document["attempts"]) == 2
     required = {

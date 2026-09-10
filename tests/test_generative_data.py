@@ -46,6 +46,8 @@ def test_logged_transitions_drive_one_cpu_rssm_training_step(tmp_path) -> None:
     }
     assert batch["boards"].shape[:2] == batch["step_mask"].shape
     assert batch["boards"].shape[-1] == 64
+    assert dataset.specials.shape == dataset.boards.shape
+    assert dataset.next_specials.shape == dataset.next_boards.shape
     assert int(batch["step_mask"].sum()) == int(
         np.isin(dataset.episode_ids, selected_episodes).sum()
     )
@@ -96,6 +98,28 @@ def test_episode_converter_matches_logged_transition_contract() -> None:
     batch = dataset.batch(dataset.episodes, device=torch.device("cpu"))
     assert int(batch["step_mask"].sum()) == len(dataset.actions)
     assert batch["boards"].shape[-1] == 64
+    np.testing.assert_array_equal(
+        dataset.specials[0], episodes[0].states[0].specials.ravel()
+    )
+
+
+def test_schema_v2_transition_loader_fills_ordinary_specials(tmp_path) -> None:
+    episodes = simulate(2, seed=3709)
+    current_path = write_transitions(episodes, tmp_path / "current.npz")
+    with np.load(current_path, allow_pickle=False) as current:
+        legacy = {
+            name: current[name]
+            for name in current.files
+            if name not in {"specials_before", "specials_after"}
+        }
+    legacy["schema_version"] = np.asarray([2], dtype=np.int16)
+    legacy_path = tmp_path / "legacy.npz"
+    np.savez_compressed(legacy_path, **legacy)
+
+    dataset = load_gameplay_transition_dataset(legacy_path)
+
+    assert not np.any(dataset.specials)
+    assert not np.any(dataset.next_specials)
 
 
 def test_generative_training_batch_aligns_prefix_target_and_oracle() -> None:
