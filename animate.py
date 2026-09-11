@@ -56,7 +56,12 @@ def _hud(state: State, episode: Episode, note: str = "") -> Hud:
     )
 
 
-def _static_tiles(board: np.ndarray, theme: Theme, skip: set[tuple[int, int]]) -> list[Tile]:
+def _static_tiles(
+    board: np.ndarray,
+    theme: Theme,
+    skip: set[tuple[int, int]],
+    specials: np.ndarray | None = None,
+) -> list[Tile]:
     tiles: list[Tile] = []
     height, width = board.shape
     for row in range(height):
@@ -67,7 +72,8 @@ def _static_tiles(board: np.ndarray, theme: Theme, skip: set[tuple[int, int]]) -
             if value < 0:
                 continue
             x, y = theme.centre(row, col)
-            tiles.append(Tile(x, y, value))
+            special = 0 if specials is None else int(specials[row, col])
+            tiles.append(Tile(x, y, value, special=special))
     return tiles
 
 
@@ -79,7 +85,12 @@ def _swap_frames(
     (r1, c1), (r2, c2) = action.cells
     board = transition.board_before
     moving = {(r1, c1), (r2, c2)}
-    static = _static_tiles(board, theme, moving)
+    before_specials = (
+        np.zeros(board.shape, dtype=np.int8)
+        if transition.specials_swapped is None
+        else _apply_reverse_swap(transition.specials_swapped, action)
+    )
+    static = _static_tiles(board, theme, moving, before_specials)
 
     x1, y1 = theme.centre(r1, c1)
     x2, y2 = theme.centre(r2, c2)
@@ -88,16 +99,25 @@ def _swap_frames(
     for frame in range(timing.swap):
         u = ease_in_out((frame + 1) / timing.swap)
         yield static + [
-            Tile(x1 + (x2 - x1) * u, y1 + (y2 - y1) * u, v1, scale=1.0 + 0.10 * np.sin(np.pi * u)),
-            Tile(x2 + (x1 - x2) * u, y2 + (y1 - y2) * u, v2, scale=1.0 + 0.10 * np.sin(np.pi * u)),
+            Tile(x1 + (x2 - x1) * u, y1 + (y2 - y1) * u, v1, scale=1.0 + 0.10 * np.sin(np.pi * u), special=int(before_specials[r1, c1])),
+            Tile(x2 + (x1 - x2) * u, y2 + (y1 - y2) * u, v2, scale=1.0 + 0.10 * np.sin(np.pi * u), special=int(before_specials[r2, c2])),
         ]
+
+
+def _apply_reverse_swap(specials: np.ndarray, action) -> np.ndarray:
+    before = specials.copy()
+    (r1, c1), (r2, c2) = action.cells
+    before[r1, c1], before[r2, c2] = specials[r2, c2], specials[r1, c1]
+    return before
 
 
 def _flash_frames(
     step: CascadeStep, theme: Theme, timing: Timing
 ) -> Iterator[list[Tile]]:
     matched = set(step.matched)
-    static = _static_tiles(step.board_before, theme, matched)
+    static = _static_tiles(
+        step.board_before, theme, matched, step.specials_before
+    )
     for frame in range(timing.flash):
         u = (frame + 1) / timing.flash
         pulse = np.sin(np.pi * u)
@@ -111,6 +131,11 @@ def _flash_frames(
                     int(step.board_before[row, col]),
                     scale=1.0 + 0.14 * pulse,
                     glow=pulse,
+                    special=(
+                        0
+                        if step.specials_before is None
+                        else int(step.specials_before[row, col])
+                    ),
                 )
             )
         yield static + hot
@@ -120,7 +145,9 @@ def _clear_frames(
     step: CascadeStep, theme: Theme, timing: Timing
 ) -> Iterator[list[Tile]]:
     matched = set(step.matched)
-    static = _static_tiles(step.board_before, theme, matched)
+    static = _static_tiles(
+        step.board_before, theme, matched, step.specials_before
+    )
     for frame in range(timing.clear):
         u = (frame + 1) / timing.clear
         gone = []
@@ -134,6 +161,11 @@ def _clear_frames(
                     scale=max(0.05, 1.0 - 0.85 * u),
                     alpha=max(0.0, 1.0 - u),
                     glow=1.0,
+                    special=(
+                        0
+                        if step.specials_before is None
+                        else int(step.specials_before[row, col])
+                    ),
                 )
             )
         yield static + gone
@@ -148,7 +180,9 @@ def _fall_frames(
 
     landing = {(tr, tc) for _, _, tr, tc in step.fall}
     spawn_cells = {(r, c) for r, c, _ in step.spawned}
-    static = _static_tiles(after, theme, landing | spawn_cells)
+    static = _static_tiles(
+        after, theme, landing | spawn_cells, step.specials_after
+    )
 
     # Spawned tiles in a column enter as a stack from above the top edge.
     per_column: dict[int, list[tuple[int, int]]] = {}
@@ -164,7 +198,12 @@ def _fall_frames(
             _, y0 = theme.centre(from_row, from_col)
             _, y1 = theme.centre(to_row, to_col)
             colour = int(step.board_before[from_row, from_col])
-            tiles.append(Tile(x, y0 + (y1 - y0) * u, colour))
+            special = (
+                0
+                if step.specials_before is None
+                else int(step.specials_before[from_row, from_col])
+            )
+            tiles.append(Tile(x, y0 + (y1 - y0) * u, colour, special=special))
 
         for col, entries in per_column.items():
             count = len(entries)
@@ -176,8 +215,13 @@ def _fall_frames(
         yield tiles
 
 
-def _still(board: np.ndarray, theme: Theme, count: int) -> Iterator[list[Tile]]:
-    tiles = board_tiles(board, theme)
+def _still(
+    board: np.ndarray,
+    theme: Theme,
+    count: int,
+    specials: np.ndarray | None = None,
+) -> Iterator[list[Tile]]:
+    tiles = board_tiles(board, theme, specials)
     for _ in range(count):
         yield list(tiles)
 
@@ -196,7 +240,9 @@ def episode_frames(
         return render_tiles(tiles, hud, height, width, theme)
 
     opening = episode.states[0]
-    for tiles in _still(opening.board, theme, timing.hold_start):
+    for tiles in _still(
+        opening.board, theme, timing.hold_start, opening.specials
+    ):
         yield emit(tiles, _hud(opening, episode))
 
     for index, transition in enumerate(episode.transitions):
@@ -214,17 +260,24 @@ def episode_frames(
                 yield emit(tiles, hud_mid)
             for tiles in _fall_frames(step, theme, timing):
                 yield emit(tiles, hud_mid)
-            for tiles in _still(step.board_after, theme, timing.settle_pause):
+            for tiles in _still(
+                step.board_after,
+                theme,
+                timing.settle_pause,
+                step.specials_after,
+            ):
                 yield emit(tiles, hud_mid)
 
         if transition.reshuffled:
-            for tiles in _still(after.board, theme, timing.flash):
+            for tiles in _still(
+                after.board, theme, timing.flash, after.specials
+            ):
                 yield emit(tiles, _hud(after, episode, note="board reshuffled"))
 
     final = episode.states[-1]
     verdict = "cleared" if episode.R else "out of moves"
     note = f"{verdict} · {episode.goals_cleared}/{episode.served_goal_count} collected"
-    for tiles in _still(final.board, theme, timing.hold_end):
+    for tiles in _still(final.board, theme, timing.hold_end, final.specials):
         yield emit(tiles, _hud(final, episode, note=note))
 
 

@@ -15,7 +15,17 @@ from typing import Callable, Protocol
 
 import numpy as np
 
-from .spec import EMPTY, Action, CascadeStep, LevelContext, State, Transition
+from .spec import (
+    EMPTY,
+    HORIZONTAL_STRIPE,
+    NO_SPECIAL,
+    VERTICAL_STRIPE,
+    Action,
+    CascadeStep,
+    LevelContext,
+    State,
+    Transition,
+)
 
 MAX_DEAL_ATTEMPTS = 200
 
@@ -114,6 +124,13 @@ def apply_swap(board: np.ndarray, action: Action) -> np.ndarray:
     return out
 
 
+def _apply_swap_specials(specials: np.ndarray, action: Action) -> np.ndarray:
+    out = specials.copy()
+    (r1, c1), (r2, c2) = action.cells
+    out[r1, c1], out[r2, c2] = specials[r2, c2], specials[r1, c1]
+    return out
+
+
 def legal_moves(board: np.ndarray) -> list[Action]:
     """Every swap that creates a match. Swaps that do not are simply illegal."""
     height, width = board.shape
@@ -180,8 +197,65 @@ def local_match_cells(
     return matched
 
 
+def _created_stripe(
+    swapped: np.ndarray,
+    action: Action,
+    special_grid: np.ndarray | None = None,
+) -> tuple[int, int, int] | None:
+    candidates: list[tuple[int, int, int, int]] = []
+    for row, col in action.cells:
+        if special_grid is not None and special_grid[row, col] != NO_SPECIAL:
+            continue
+        horizontal = _run_cells(swapped, row, col, 0, 1)
+        vertical = _run_cells(swapped, row, col, 1, 0)
+        if len(horizontal) == 4:
+            candidates.append((len(horizontal), row, col, HORIZONTAL_STRIPE))
+        if len(vertical) == 4:
+            candidates.append((len(vertical), row, col, VERTICAL_STRIPE))
+    if not candidates:
+        return None
+    _, row, col, kind = candidates[0]
+    return row, col, kind
+
+
+def _expand_striped_clear(
+    mask: np.ndarray,
+    specials: np.ndarray,
+    *,
+    preserve: tuple[int, int] | None = None,
+) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    expanded = mask.copy()
+    if preserve is not None:
+        expanded[preserve] = False
+    activated: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    while True:
+        rows, cols = np.nonzero(expanded)
+        pending = [
+            (int(row), int(col))
+            for row, col in zip(rows, cols)
+            if (int(row), int(col)) not in seen
+            and specials[row, col] != NO_SPECIAL
+        ]
+        if not pending:
+            break
+        for row, col in pending:
+            seen.add((row, col))
+            activated.append((row, col))
+            if specials[row, col] == HORIZONTAL_STRIPE:
+                expanded[row, :] = True
+            elif specials[row, col] == VERTICAL_STRIPE:
+                expanded[:, col] = True
+        if preserve is not None:
+            expanded[preserve] = False
+    return expanded, activated
+
+
 def immediate_effect(
-    board: np.ndarray, action: Action, goal_colour: int
+    board: np.ndarray,
+    action: Action,
+    goal_colour: int,
+    specials: np.ndarray | None = None,
 ) -> tuple[int, int]:
     """Tiles cleared and goal tiles cleared by the first round only.
 
@@ -190,8 +264,22 @@ def immediate_effect(
     """
     swapped = apply_swap(board, action)
     matched = local_match_cells(swapped, action.cells)
-    cleared = len(matched)
-    goal = sum(1 for r, c in matched if swapped[r, c] == goal_colour)
+    mask = np.zeros(swapped.shape, dtype=bool)
+    if matched:
+        rows, cols = zip(*matched)
+        mask[rows, cols] = True
+    special_grid = (
+        np.full(board.shape, NO_SPECIAL, dtype=np.int8)
+        if specials is None
+        else _apply_swap_specials(specials, action)
+    )
+    creation = _created_stripe(swapped, action, special_grid)
+    preserve = None if creation is None else creation[:2]
+    cleared_mask, _ = _expand_striped_clear(
+        mask, special_grid, preserve=preserve
+    )
+    cleared = int(cleared_mask.sum())
+    goal = int((swapped[cleared_mask] == goal_colour).sum())
     return cleared, goal
 
 
@@ -199,7 +287,10 @@ def immediate_effect(
 
 
 def collapse(
-    board: np.ndarray, draw: Draw, tag: str
+    board: np.ndarray,
+    draw: Draw,
+    tag: str,
+    specials: np.ndarray | None = None,
 ) -> tuple[list[tuple[int, int, int, int]], list[tuple[int, int, int]]]:
     """Drop survivors to the bottom of each column and refill from the top.
 
@@ -212,13 +303,28 @@ def collapse(
 
     for col in range(width):
         column = board[:, col]
-        survivors = [(row, column[row]) for row in range(height) if column[row] != EMPTY]
+        special_column = None if specials is None else specials[:, col]
+        survivors = [
+            (
+                row,
+                column[row],
+                (
+                    NO_SPECIAL
+                    if special_column is None
+                    else special_column[row]
+                ),
+            )
+            for row in range(height)
+            if column[row] != EMPTY
+        ]
         rebuilt = np.full(height, EMPTY, dtype=board.dtype)
+        rebuilt_specials = np.full(height, NO_SPECIAL, dtype=np.int8)
 
         offset = height - len(survivors)
-        for index, (row, value) in enumerate(survivors):
+        for index, (row, value, special) in enumerate(survivors):
             landing = offset + index
             rebuilt[landing] = value
+            rebuilt_specials[landing] = special
             if landing != row:
                 fall.append((row, col, landing, col))
 
@@ -229,12 +335,20 @@ def collapse(
                 spawned.append((row, col, int(values[row])))
 
         board[:, col] = rebuilt
+        if specials is not None:
+            specials[:, col] = rebuilt_specials
 
     return fall, spawned
 
 
 def settle(
-    board: np.ndarray, draw: Draw, goal_colour: int, tag: str
+    board: np.ndarray,
+    draw: Draw,
+    goal_colour: int,
+    tag: str,
+    *,
+    specials: np.ndarray | None = None,
+    created_special: tuple[int, int, int] | None = None,
 ) -> list[CascadeStep]:
     """Run clear-fall-refill to a fixpoint. Mutates ``board``."""
     steps: list[CascadeStep] = []
@@ -243,13 +357,33 @@ def settle(
         if not mask.any():
             return steps
 
-        rows, cols = np.nonzero(mask)
+        special_grid = (
+            np.full(board.shape, NO_SPECIAL, dtype=np.int8)
+            if specials is None
+            else specials
+        )
+        creation = created_special if not steps else None
+        preserve = None if creation is None else creation[:2]
+        if creation is not None:
+            row, col, kind = creation
+            special_grid[row, col] = kind
+        specials_before = special_grid.copy()
+        clear_mask, activated = _expand_striped_clear(
+            mask, special_grid, preserve=preserve
+        )
+        rows, cols = np.nonzero(clear_mask)
         matched = [(int(r), int(c)) for r, c in zip(rows, cols)]
         board_before = board.copy()
-        goal_cleared = int((board[mask] == goal_colour).sum())
+        goal_cleared = int((board[clear_mask] == goal_colour).sum())
 
-        board[mask] = EMPTY
-        fall, spawned = collapse(board, draw, f"{tag}_s{len(steps)}")
+        board[clear_mask] = EMPTY
+        special_grid[clear_mask] = NO_SPECIAL
+        fall, spawned = collapse(
+            board,
+            draw,
+            f"{tag}_s{len(steps)}",
+            specials=special_grid,
+        )
 
         steps.append(
             CascadeStep(
@@ -259,6 +393,10 @@ def settle(
                 fall=fall,
                 spawned=spawned,
                 goal_cleared=goal_cleared,
+                specials_before=specials_before,
+                specials_after=special_grid.copy(),
+                created_specials=[] if creation is None else [creation],
+                activated_specials=activated,
             )
         )
 
@@ -292,7 +430,13 @@ def deal(level: LevelContext, draw: Draw, tag: str) -> np.ndarray:
     return board
 
 
-def reshuffle(board: np.ndarray, level: LevelContext, draw: Draw, tag: str) -> bool:
+def reshuffle(
+    board: np.ndarray,
+    level: LevelContext,
+    draw: Draw,
+    tag: str,
+    specials: np.ndarray | None = None,
+) -> bool:
     """Redraw a deadlocked board in place. Returns whether a reshuffle happened.
 
     Reshuffles are unpopular with players and the industry treats two or more on
@@ -301,6 +445,8 @@ def reshuffle(board: np.ndarray, level: LevelContext, draw: Draw, tag: str) -> b
     if has_legal_move(board):
         return False
     board[:, :] = deal(level, draw, tag)
+    if specials is not None:
+        specials.fill(NO_SPECIAL)
     return True
 
 
@@ -317,15 +463,32 @@ def resolve_move(
     board_before = state.board.copy()
     board = apply_swap(state.board, action)
     board_swapped = board.copy()
+    specials = _apply_swap_specials(state.specials, action)
+    specials_swapped = specials.copy()
+    created_special = _created_stripe(board, action, specials)
 
-    steps = settle(board, draw, state.goal_colour, tag=f"t{state.t}")
+    steps = settle(
+        board,
+        draw,
+        state.goal_colour,
+        tag=f"t{state.t}",
+        specials=specials,
+        created_special=created_special,
+    )
     transition = Transition(
         action=action,
         board_before=board_before,
         board_swapped=board_swapped,
+        specials_swapped=specials_swapped,
         steps=steps,
     )
-    transition.reshuffled = reshuffle(board, level, draw, tag=f"t{state.t}_shuffle")
+    transition.reshuffled = reshuffle(
+        board,
+        level,
+        draw,
+        tag=f"t{state.t}_shuffle",
+        specials=specials,
+    )
 
     nxt = State(
         board=board,
@@ -333,6 +496,7 @@ def resolve_move(
         goals_left=max(0, state.goals_left - transition.goal_cleared),
         goal_colour=state.goal_colour,
         t=state.t + 1,
+        specials=specials,
     )
     return nxt, transition
 

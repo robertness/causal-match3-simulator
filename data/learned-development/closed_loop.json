@@ -1,0 +1,647 @@
+{
+  "schema_version": 1,
+  "e_grid": [
+    -1.0,
+    0.0,
+    1.0
+  ],
+  "n_players": 15,
+  "rollouts_per_player": 4,
+  "stochastic_policy": true,
+  "seed": 463,
+  "mean_absolute_win_gap": 0.08807852963606516,
+  "maximum_absolute_win_gap": 0.14605871737003326,
+  "levels": {
+    "orchard": [
+      {
+        "e": -1.0,
+        "head_win_probability": 0.5002996921539307,
+        "head_churn_probability": 0.5408849120140076,
+        "rollout_win_probability": 0.4166666666666667,
+        "absolute_win_gap": 0.08363302548726398,
+        "n_rollouts": 60
+      },
+      {
+        "e": 0.0,
+        "head_win_probability": 0.3649960160255432,
+        "head_churn_probability": 0.6370936632156372,
+        "rollout_win_probability": 0.25,
+        "absolute_win_gap": 0.11499601602554321,
+        "n_rollouts": 60
+      },
+      {
+        "e": 1.0,
+        "head_win_probability": 0.24605871737003326,
+        "head_churn_probability": 0.7965915203094482,
+        "rollout_win_probability": 0.1,
+        "absolute_win_gap": 0.14605871737003326,
+        "n_rollouts": 60
+      }
+    ],
+    "harbour": [
+      {
+        "e": -1.0,
+        "head_win_probability": 0.5254936218261719,
+        "head_churn_probability": 0.4895155727863312,
+        "rollout_win_probability": 0.4666666666666667,
+        "absolute_win_gap": 0.0588269551595052,
+        "n_rollouts": 60
+      },
+      {
+        "e": 0.0,
+        "head_win_probability": 0.3583146333694458,
+        "head_churn_probability": 0.5443815588951111,
+        "rollout_win_probability": 0.23333333333333334,
+        "absolute_win_gap": 0.12498130003611246,
+        "n_rollouts": 60
+      },
+      {
+        "e": 1.0,
+        "head_win_probability": 0.21355096995830536,
+        "head_churn_probability": 0.7144219875335693,
+        "rollout_win_probability": 0.11666666666666667,
+        "absolute_win_gap": 0.09688430329163869,
+        "n_rollouts": 60
+      }
+    ],
+    "foundry": [
+      {
+        "e": -1.0,
+        "head_win_probability": 0.5830793976783752,
+        "head_churn_probability": 0.4638131558895111,
+        "rollout_win_probability": 0.5,
+        "absolute_win_gap": 0.08307939767837524,
+        "n_rollouts": 60
+      },
+      {
+        "e": 0.0,
+        "head_win_probability": 0.38602402806282043,
+        "head_churn_probability": 0.5241284966468811,
+        "rollout_win_probability": 0.38333333333333336,
+        "absolute_win_gap": 0.0026906947294870753,
+        "n_rollouts": 60
+      },
+      {
+        "e": 1.0,
+        "head_win_probability": 0.21488969027996063,
+        "head_churn_probability": 0.7136944532394409,
+        "rollout_win_probability": 0.13333333333333333,
+        "absolute_win_gap": 0.0815563569466273,
+        "n_rollouts": 60
+      }
+    ]
+  },
+  "experiment_dir": "match3_simulator/data/learned-development",
+  "source_metrics": "metrics.json",
+  "model_config": {
+    "action": {
+      "n_colours": 6,
+      "skill_dimensions": 4,
+      "d_model": 64,
+      "n_layers": 2,
+      "n_heads": 4,
+      "dropout": 0.0,
+      "max_moves_left": 22,
+      "mask_fill": -1000000000.0,
+      "use_immediate_features": true
+    },
+    "encoder": {
+      "n_colours": 6,
+      "n_levels": 3,
+      "n_tiers": 3,
+      "proxy_dimensions": 12,
+      "skill_dimensions": 4,
+      "hidden_size": 64,
+      "max_moves_left": 22
+    }
+  },
+  "propensity_artifact": {
+    "path": "win_propensity_calibration.json",
+    "sha256": "c6d7308590d1327633e9ef2e8caa74a0e462439646182c49a99470730bd54dea"
+  },
+  "player_ids": [
+    11,
+    25,
+    27,
+    31,
+    34,
+    35,
+    39,
+    52,
+    62,
+    66,
+    67,
+    75,
+    78,
+    91,
+    95
+  ],
+  "causal_query": {
+    "n_players": 38,
+    "levels": {
+      "orchard": {
+        "grid": [
+          -2.0,
+          -1.75,
+          -1.5,
+          -1.25,
+          -1.0,
+          -0.75,
+          -0.5,
+          -0.25,
+          0.0,
+          0.25,
+          0.5,
+          0.75,
+          1.0,
+          1.25,
+          1.5,
+          1.75,
+          2.0
+        ],
+        "oracle": [
+          0.8619073359758161,
+          0.875821432748017,
+          0.8182011660396338,
+          0.8034848381916053,
+          0.7460196214776219,
+          0.756969360965995,
+          0.7766039999844325,
+          0.7897410155193758,
+          0.8066953831078896,
+          0.806608897453542,
+          0.841517253244161,
+          0.86379850636099,
+          0.8687616645410994,
+          0.8874432079701471,
+          0.9047973479389085,
+          0.9557993389173215,
+          0.9759590375027152
+        ],
+        "learned": [
+          0.5794825553894043,
+          0.5532210469245911,
+          0.5348427295684814,
+          0.5268142223358154,
+          0.5225970149040222,
+          0.5247657895088196,
+          0.5408414602279663,
+          0.5657908916473389,
+          0.5910688042640686,
+          0.6295867562294006,
+          0.671172559261322,
+          0.718779444694519,
+          0.7624495625495911,
+          0.8045225739479065,
+          0.8453715443611145,
+          0.879916250705719,
+          0.9138328433036804
+        ],
+        "oracle_optimum": -1.0,
+        "learned_optimum": -1.0,
+        "recommendation_gap": 0.0,
+        "oracle_regret": 0.0,
+        "curve_mae": 0.1867690210656183
+      },
+      "harbour": {
+        "grid": [
+          -2.0,
+          -1.75,
+          -1.5,
+          -1.25,
+          -1.0,
+          -0.75,
+          -0.5,
+          -0.25,
+          0.0,
+          0.25,
+          0.5,
+          0.75,
+          1.0,
+          1.25,
+          1.5,
+          1.75,
+          2.0
+        ],
+        "oracle": [
+          0.5553121181297759,
+          0.5129388438751362,
+          0.49375430384747476,
+          0.4976118583083984,
+          0.5023272827718337,
+          0.4962772899870313,
+          0.4918511567678599,
+          0.5189140599289752,
+          0.5666551431077237,
+          0.6266907144174072,
+          0.6895465263862222,
+          0.7408428938194676,
+          0.780098022015569,
+          0.8284399753652948,
+          0.8810673906852095,
+          0.9156361334821705,
+          0.9393695974878158
+        ],
+        "learned": [
+          0.5584597587585449,
+          0.5289737582206726,
+          0.502450168132782,
+          0.4821167588233948,
+          0.4683443009853363,
+          0.46260666847229004,
+          0.4668211042881012,
+          0.4848625659942627,
+          0.5172378420829773,
+          0.5587500333786011,
+          0.6022710800170898,
+          0.6500314474105835,
+          0.705951988697052,
+          0.7656047344207764,
+          0.8225386142730713,
+          0.8686900734901428,
+          0.9044356346130371
+        ],
+        "oracle_optimum": -0.5,
+        "learned_optimum": -0.75,
+        "recommendation_gap": 0.25,
+        "oracle_regret": 0.004426133219171402,
+        "curve_mae": 0.04370256569669853
+      },
+      "foundry": {
+        "grid": [
+          -2.0,
+          -1.75,
+          -1.5,
+          -1.25,
+          -1.0,
+          -0.75,
+          -0.5,
+          -0.25,
+          0.0,
+          0.25,
+          0.5,
+          0.75,
+          1.0,
+          1.25,
+          1.5,
+          1.75,
+          2.0
+        ],
+        "oracle": [
+          0.530422616457249,
+          0.5006483974441758,
+          0.4739979058180317,
+          0.4493987711532147,
+          0.43253769281659116,
+          0.4312950016050748,
+          0.44855411999913786,
+          0.48391870890621,
+          0.5293554073294633,
+          0.5734363988065437,
+          0.6201112926002408,
+          0.676398813524492,
+          0.7450767172928706,
+          0.8132735219120022,
+          0.8616379405921378,
+          0.8933193883953832,
+          0.9152209292432532
+        ],
+        "learned": [
+          0.6190271973609924,
+          0.5711392164230347,
+          0.5329820513725281,
+          0.5001401305198669,
+          0.47092121839523315,
+          0.45156216621398926,
+          0.4467743933200836,
+          0.45369479060173035,
+          0.4711325764656067,
+          0.5060179829597473,
+          0.5520493984222412,
+          0.6134940981864929,
+          0.6844785809516907,
+          0.7597715258598328,
+          0.8270382881164551,
+          0.8824527859687805,
+          0.9224346280097961
+        ],
+        "oracle_optimum": -0.75,
+        "learned_optimum": -0.5,
+        "recommendation_gap": 0.25,
+        "oracle_regret": 0.017259118394063078,
+        "curve_mae": 0.04605077542727476
+      }
+    }
+  },
+  "baseline_rollout_win_curves": {
+    "state_only": {
+      "orchard": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.36666666666666664,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.21666666666666667,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.05,
+          "n_rollouts": 60
+        }
+      ],
+      "harbour": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.43333333333333335,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.2,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.11666666666666667,
+          "n_rollouts": 60
+        }
+      ],
+      "foundry": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.5166666666666667,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.3333333333333333,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.16666666666666666,
+          "n_rollouts": 60
+        }
+      ]
+    },
+    "oracle_skill": {
+      "orchard": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.4166666666666667,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.16666666666666666,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.08333333333333333,
+          "n_rollouts": 60
+        }
+      ],
+      "harbour": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.4166666666666667,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.25,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.13333333333333333,
+          "n_rollouts": 60
+        }
+      ],
+      "foundry": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.4666666666666667,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.3333333333333333,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.13333333333333333,
+          "n_rollouts": 60
+        }
+      ]
+    },
+    "ground_truth_inferred_skill": {
+      "orchard": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.4166666666666667,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.3,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.13333333333333333,
+          "n_rollouts": 60
+        }
+      ],
+      "harbour": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.36666666666666664,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.21666666666666667,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.11666666666666667,
+          "n_rollouts": 60
+        }
+      ],
+      "foundry": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.5833333333333334,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.4,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.18333333333333332,
+          "n_rollouts": 60
+        }
+      ]
+    },
+    "ground_truth_true_skill": {
+      "orchard": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.45,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.35,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.21666666666666667,
+          "n_rollouts": 60
+        }
+      ],
+      "harbour": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.4166666666666667,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.26666666666666666,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.2,
+          "n_rollouts": 60
+        }
+      ],
+      "foundry": [
+        {
+          "e": -1.0,
+          "rollout_win_probability": 0.5833333333333334,
+          "n_rollouts": 60
+        },
+        {
+          "e": 0.0,
+          "rollout_win_probability": 0.4166666666666667,
+          "n_rollouts": 60
+        },
+        {
+          "e": 1.0,
+          "rollout_win_probability": 0.25,
+          "n_rollouts": 60
+        }
+      ]
+    }
+  },
+  "oracle_propensity_curves": {
+    "inferred_skill": {
+      "orchard": [
+        {
+          "e": -1.0,
+          "win_probability": 0.45311335586766077
+        },
+        {
+          "e": 0.0,
+          "win_probability": 0.239123150798643
+        },
+        {
+          "e": 1.0,
+          "win_probability": 0.09316453595639394
+        }
+      ],
+      "harbour": [
+        {
+          "e": -1.0,
+          "win_probability": 0.3913976928049075
+        },
+        {
+          "e": 0.0,
+          "win_probability": 0.21691999689324085
+        },
+        {
+          "e": 1.0,
+          "win_probability": 0.09896766222603996
+        }
+      ],
+      "foundry": [
+        {
+          "e": -1.0,
+          "win_probability": 0.4058422874076793
+        },
+        {
+          "e": 0.0,
+          "win_probability": 0.24611810056969913
+        },
+        {
+          "e": 1.0,
+          "win_probability": 0.12849670364028715
+        }
+      ]
+    },
+    "true_skill": {
+      "orchard": [
+        {
+          "e": -1.0,
+          "win_probability": 0.5744216176489395
+        },
+        {
+          "e": 0.0,
+          "win_probability": 0.3499909865038275
+        },
+        {
+          "e": 1.0,
+          "win_probability": 0.1676170033894438
+        }
+      ],
+      "harbour": [
+        {
+          "e": -1.0,
+          "win_probability": 0.49929976197811704
+        },
+        {
+          "e": 0.0,
+          "win_probability": 0.3133428967314574
+        },
+        {
+          "e": 1.0,
+          "win_probability": 0.16648656104074927
+        }
+      ],
+      "foundry": [
+        {
+          "e": -1.0,
+          "win_probability": 0.5124877044288692
+        },
+        {
+          "e": 0.0,
+          "win_probability": 0.34088421062894997
+        },
+        {
+          "e": 1.0,
+          "win_probability": 0.19749678675243795
+        }
+      ]
+    }
+  },
+  "reference_gaps": {
+    "learned_head_vs_oracle_propensity_mae": 0.12439592006222609,
+    "inferred_policy_vs_oracle_propensity_mae": 0.044416654693048514,
+    "oracle_skill_policy_vs_oracle_propensity_mae": 0.08022528101142129,
+    "ground_truth_policy_vs_oracle_propensity_mae": 0.0629316968481926,
+    "inferred_policy_vs_ground_truth_policy_mae": 0.03888888888888889
+  }
+}

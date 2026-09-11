@@ -8,6 +8,15 @@ dist/
 .env
 .DS_Store
 .ipynb_checkpoints/
-data/
+data/**
+!data/landmark-validation-report.json
+!data/legacy/
+!data/legacy/**
+!data/learned-smoke/
+!data/learned-smoke/metrics.json
+!data/learned-smoke/closed_loop.json
+!data/learned-development/
+!data/learned-development/metrics.json
+!data/learned-development/closed_loop.json
 *.mp4
 *.gif
