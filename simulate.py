@@ -34,12 +34,14 @@ from .scm import (
 )
 from .retention import (
     CHURN_SCHEDULE,
+    ChurnConfig,
+    ChurnSchedule,
     MasteryConfig,
     PlayerTrajectory,
     WinPropensityModel,
     simulate_player_trajectory,
 )
-from .spec import BENCHMARK_CONFIG
+from .spec import BENCHMARK_CONFIG, BenchmarkConfig
 from .trajectory import (
     logged_attempt_summary_row,
     oracle_attempt_summary_row,
@@ -64,6 +66,11 @@ def simulate_players(
     seed: int = 0,
     max_attempts: int = 30,
     progress_every: int = 0,
+    benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
+    churn_config: ChurnConfig | ChurnSchedule = CHURN_SCHEDULE,
+    mastery_config: MasteryConfig = MasteryConfig(),
+    dda_gains: tuple[float, ...] | None = None,
+    e_sigmas: tuple[float, ...] | None = None,
 ) -> list[PlayerTrajectory]:
     trajectories: list[PlayerTrajectory] = []
     for player_id in range(n_players):
@@ -73,6 +80,11 @@ def simulate_players(
                 player_id=player_id,
                 seed=seed,
                 max_attempts=max_attempts,
+                benchmark=benchmark,
+                churn_config=churn_config,
+                mastery_config=mastery_config,
+                dda_gains=dda_gains,
+                e_sigmas=e_sigmas,
             )
         )
         if progress_every and (player_id + 1) % progress_every == 0:
@@ -152,6 +164,12 @@ def write_player_dataset(
     seed: int,
     max_attempts: int,
     include_transitions: bool = True,
+    benchmark: BenchmarkConfig = BENCHMARK_CONFIG,
+    churn_config: ChurnConfig | ChurnSchedule = CHURN_SCHEDULE,
+    mastery_config: MasteryConfig = MasteryConfig(),
+    dda_gains: tuple[float, ...] = DDA_GAINS,
+    e_sigmas: tuple[float, ...] = E_SIGMAS,
+    provenance: dict[str, object] | None = None,
 ) -> Path:
     """Write physically separated logged/oracle artifacts plus a manifest."""
     if not trajectories:
@@ -188,12 +206,12 @@ def write_player_dataset(
     configuration = {
         "seed": seed,
         "max_attempts": max_attempts,
-        "benchmark": asdict(BENCHMARK_CONFIG),
-        "mastery": asdict(MasteryConfig()),
-        "churn": asdict(CHURN_SCHEDULE),
+        "benchmark": asdict(benchmark),
+        "mastery": asdict(mastery_config),
+        "churn": asdict(churn_config),
         "assignment": {
-            "skill_gains": list(DDA_GAINS),
-            "sigmas": list(E_SIGMAS),
+            "skill_gains": list(dda_gains),
+            "sigmas": list(e_sigmas),
         },
     }
     configuration_sha256 = hashlib.sha256(
@@ -205,6 +223,7 @@ def write_player_dataset(
         "code_sha": _git_revision(),
         "configuration_sha256": configuration_sha256,
         "configuration": configuration,
+        "provenance": provenance or {},
         "counts": {
             "players": len(trajectories),
             "attempts": len(records),

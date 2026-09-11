@@ -167,12 +167,38 @@ def test_repeated_player_simulation_and_attempt_table(tmp_path) -> None:
 
 
 def test_player_dataset_manifest_hashes_logged_and_oracle_artifacts(tmp_path) -> None:
-    trajectories = simulate_players(2, _model(), seed=239, max_attempts=2)
+    mastery = MasteryConfig(initial=0.42, update_rate=0.17)
+    churn = ChurnConfig(
+        intercept=-19.0,
+        deviation_coefficient=2.0,
+        overchallenge_deviation_coefficient=3.0,
+        mastery_target=0.4,
+        margin_deviation_coefficient=0.5,
+        margin_overchallenge_deviation_coefficient=0.75,
+        margin_target=-0.1,
+    )
+    gains = (0.0, 0.0, 0.0)
+    sigmas = (0.0, 0.0, 0.0)
+    trajectories = simulate_players(
+        2,
+        _model(),
+        seed=239,
+        max_attempts=2,
+        mastery_config=mastery,
+        churn_config=churn,
+        dda_gains=gains,
+        e_sigmas=sigmas,
+    )
     manifest_path = write_player_dataset(
         trajectories,
         tmp_path,
         seed=239,
         max_attempts=2,
+        mastery_config=mastery,
+        churn_config=churn,
+        dda_gains=gains,
+        e_sigmas=sigmas,
+        provenance={"source": "test"},
     )
     manifest = json.loads(manifest_path.read_text())
 
@@ -181,6 +207,29 @@ def test_player_dataset_manifest_hashes_logged_and_oracle_artifacts(tmp_path) ->
     assert manifest["counts"]["players"] == 2
     assert manifest["counts"]["attempts"] == sum(
         len(trajectory.attempts) for trajectory in trajectories
+    )
+    assert manifest["configuration"]["mastery"] == {
+        "initial": 0.42,
+        "update_rate": 0.17,
+    }
+    assert manifest["configuration"]["churn"] == {
+        "intercept": -19.0,
+        "deviation_coefficient": 2.0,
+        "overchallenge_deviation_coefficient": 3.0,
+        "mastery_target": 0.4,
+        "margin_deviation_coefficient": 0.5,
+        "margin_overchallenge_deviation_coefficient": 0.75,
+        "margin_target": -0.1,
+    }
+    assert manifest["configuration"]["assignment"] == {
+        "skill_gains": [0.0, 0.0, 0.0],
+        "sigmas": [0.0, 0.0, 0.0],
+    }
+    assert manifest["provenance"] == {"source": "test"}
+    assert all(
+        record.mastery_before == 0.42
+        for trajectory in trajectories
+        for record in trajectory.attempts[:1]
     )
     assert set(manifest["logged_artifacts"]) == {"attempts", "transitions"}
     assert set(manifest["oracle_artifacts"]) == {"attempt_state"}

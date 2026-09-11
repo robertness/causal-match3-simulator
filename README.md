@@ -118,6 +118,30 @@ The transition artifact includes level, tier, served difficulty, current and
 next special grids, next-state counters, and episode/player identifiers so `load_gameplay_transition_dataset`
 can construct masked `GameplayRSSM` sequence batches directly.
 
+## Accepted reference dataset
+
+Generate the versioned Wrong Move dataset package with the accepted striped-
+mechanics configuration:
+
+```bash
+match3-release --workers 8 --out data/releases/wrong-move-reference-v1
+```
+
+The release command, unlike the generic `match3-simulate` command, loads
+`accepted_benchmark.json` and the pinned extended-support quota table. It writes
+ten bounded shards for each of two regimes, common 70/15/15 player split IDs,
+an aggregate release manifest, and `qc.json`. Logged and oracle fields remain
+physically separated, and the output directory appears only after all hashes,
+schemas, action legality checks, and assignment diagnostics pass.
+
+The natural regime uses the accepted skill-adaptive assignment. The randomized
+control sets skill gain to zero and uses level-specific noise
+$\sqrt{g_l^2+\sigma_l^2}$. Because standardized effective skill is Gaussian
+with unit variance, this preserves the natural assignment's marginal variance
+conditional on level and baseline tier while removing its dependence on true
+player skill. Both regimes use the same player IDs and deterministic
+player-attempt seeds.
+
 Run a board-engine calibration pilot and render its curves:
 
 ```bash
@@ -213,5 +237,6 @@ within-stratum variation in served difficulty. Level-aligned `dda_gains=` and
 
 The engine CLI likewise accepts explicit expected-experience, easy/hard-side
 churn, assignment, and grid parameters. Parameters selected on calibration seeds are not promoted to live
-defaults until all levels pass on every held-out validation seed, including
-player-bootstrap direction and overlap gates.
+defaults. The accepted reference remains isolated in `accepted_benchmark.json`
+and is used only through the release path, preserving backward compatibility for
+legacy simulator callers.

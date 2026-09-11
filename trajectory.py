@@ -297,6 +297,7 @@ def logged_attempt_summary_row(record: AttemptRecord) -> dict[str, Any]:
             "player_id": record.player_id,
             "attempt_id": record.attempt_id,
             "active_before": 1,
+            "completion_margin": record.completion_margin,
             "churn_after": record.churn_after,
         }
     )

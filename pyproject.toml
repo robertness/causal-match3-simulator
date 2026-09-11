@@ -24,6 +24,7 @@ match3-video = "match3_simulator.video:main"
 match3-simulate = "match3_simulator.simulate:main"
 match3-learn = "match3_simulator.learned_model.experiment:main"
 match3-evaluate = "match3_simulator.learned_model.evaluate:main"
+match3-release = "match3_simulator.release:main"
 
 [tool.setuptools]
 packages = ["match3_simulator", "match3_simulator.learned_model"]
@@ -33,7 +34,12 @@ match3_simulator = "."
 "match3_simulator.learned_model" = "learned_model"
 
 [tool.setuptools.package-data]
-match3_simulator = ["calibration.json", "win_propensity_calibration.json"]
+match3_simulator = [
+    "accepted_benchmark.json",
+    "accepted_calibration.json",
+    "calibration.json",
+    "win_propensity_calibration.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
